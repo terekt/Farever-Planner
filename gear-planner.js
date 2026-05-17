@@ -934,8 +934,15 @@
   /** Neck, rings, trinket — item modal lists do **not** filter by **`item.aptitudes`** vs planner class (shared / hybrid jewelry). */
   const SLOT_KEYS_NO_CLASS_APTITUDE_MODAL_FILTER = new Set(["neck", "ring1", "ring2", "trinket"]);
 
-  /** **item.id** values omitted from planner picks (capture tools listed like weapons). `Net_Basic` = Large Butterfly Net. */
-  const PLANNER_ITEM_ID_BLOCKLIST = new Set(["Net_Basic"]);
+  /** **item.id** values omitted from planner picks (capture tools / hidden demon weapons). `Net_Basic` = Large Butterfly Net. */
+  const PLANNER_ITEM_ID_BLOCKLIST = new Set([
+    "Net_Basic",
+    "GS_Z1Mines_Fig",
+    "Daggers_Demondash",
+    "Halos_Demon",
+    "GA_Demon",
+    "Staff_SummonDemon",
+  ]);
   /** **`item.faction`** values hidden from the planner (empty = show all factions). */
   const PLANNER_EXCLUDE_ITEM_FACTIONS = new Set();
 
@@ -1704,6 +1711,7 @@
   function plannerModifierPreviewHtml(modItem, slotDef) {
     if (!modItem) return `<span class="gp-augment-pick__empty">No preview</span>`;
     const flats = flatEnchantContribution(modItem, slotDef, { displayOnly: true });
+    mergeEnchantSkillStatusPreviewFlats(flats, modItem);
     const formatted = formatSimulatedStatLines(flats);
     const statHtml = previewPlainLinesAsHtml(formatted);
     const skillLines = [];
@@ -1756,6 +1764,41 @@
 
   function mergeEnchantTotals(into, enchantItem, slotDef) {
     const add = flatEnchantContribution(enchantItem, slotDef);
+    for (const k of Object.keys(add)) {
+      into[k] = (into[k] || 0) + add[k];
+    }
+  }
+
+  function enchantSkillStatusPreviewFlatTotals(enchantItem) {
+    const totals = {};
+    if (!enchantItem || !Array.isArray(enchantItem.skills)) return totals;
+    for (let i = 0; i < enchantItem.skills.length; i++) {
+      const sid = enchantItem.skills[i] && enchantItem.skills[i].skill;
+      if (typeof sid !== "string" || !sid) continue;
+      const host = skillById[sid];
+      if (!host) continue;
+      const refs = new Set();
+      collectStatusRefIdsFromHostSkill(host, refs);
+      if (skillIsPreviewableStackingStatusBuff(host)) refs.add(sid);
+      for (const stId of refs) {
+        const st = skillById[stId];
+        if (!st) continue;
+        const stacks = statusPreviewSheetAffixStacks(st);
+        if (stacks <= 0) continue;
+        const attrs = collectTalentFlatAffixAttributeOrder(st);
+        for (let ai = 0; ai < attrs.length; ai++) {
+          const attr = attrs[ai];
+          const per = statusPreviewFlatPerStackAtGrantorRank(st, attr, 1);
+          if (!per) continue;
+          totals[attr] = (totals[attr] || 0) + per * stacks;
+        }
+      }
+    }
+    return totals;
+  }
+
+  function mergeEnchantSkillStatusPreviewFlats(into, enchantItem) {
+    const add = enchantSkillStatusPreviewFlatTotals(enchantItem);
     for (const k of Object.keys(add)) {
       into[k] = (into[k] || 0) + add[k];
     }
@@ -2942,7 +2985,7 @@
       seen.add(cur);
       out.push(cur);
       const row = itemTypeRowsById && itemTypeRowsById[cur];
-      cur = row && row.inherit;
+      cur = row ? parseItemTypeInherit(row.inherit) : null;
     }
     return out;
   }
@@ -3924,21 +3967,29 @@
     return itemTypeChainRows(typeId).map((r) => r.id);
   }
 
-  /** Main-hand candidates: item types under `MainhandWeapon`. */
+  const MAIN_HAND_WEAPON_FAMILY_IDS = new Set(["OHWeapon", "DualWeapon", "THWeapon", "LongWeapon"]);
+  const OFFHAND_BLOCKING_WEAPON_FAMILY_IDS = new Set(["DualWeapon", "THWeapon", "LongWeapon"]);
+
+  /** Main-hand candidates: one-hand, dual, two-hand, and long weapon lineages. */
   function canEquipMainSlot(typeId) {
-    return itemTypeAncestorIds(typeId).includes("MainhandWeapon");
-  }
-
-  /** Off-hand: one-handed lineages or dedicated off-hand gear. */
-  function canEquipOffSlot(typeId) {
     const a = itemTypeAncestorIds(typeId);
-    return a.includes("OHWeapon") || a.includes("OffhandWeapon");
+    return a.some((id) => MAIN_HAND_WEAPON_FAMILY_IDS.has(id));
   }
 
-  /** Two-handers (incl. bows via `THWeapon`) and staves / polearms (`LongWeapon`) block the off-hand slot. */
+  /** Off-hand candidates: dedicated off-hand weapon lineages only. */
+  function canEquipOffSlot(typeId) {
+    return itemTypeAncestorIds(typeId).includes("OffhandWeapon");
+  }
+
+  /** Dual, two-handed, and long weapons block the off-hand slot. */
   function weaponOccupiesBothHands(typeId) {
     const a = itemTypeAncestorIds(typeId);
-    return a.includes("THWeapon") || a.includes("LongWeapon");
+    return a.some((id) => OFFHAND_BLOCKING_WEAPON_FAMILY_IDS.has(id));
+  }
+
+  /** Main-hand weapons whose family permits an off-hand item alongside them. */
+  function weaponCanEquipWithOffhand(typeId) {
+    return canEquipMainSlot(typeId) && !weaponOccupiesBothHands(typeId);
   }
 
   function skillRowType(sk) {
@@ -5831,16 +5882,22 @@
           if (!effectScalingIsCombatDamagePreview(e)) continue;
           if (!skillHostStepEffectMatchesMastery(src, st, e)) continue;
           const sc = e.scaling;
-          if (!Array.isArray(sc) || !sc.length) continue;
+          const hasScaling = Array.isArray(sc) && sc.length > 0;
+          const baseVal = typeof e.baseVal === "number" && Number.isFinite(e.baseVal) ? e.baseVal : 0;
+          if (!hasScaling && !(baseVal > 0)) continue;
           const affShort = e.affinity ? String(e.affinity) : "Hit";
           const parts = [];
           const condRank = skillDamageScalingCondsRank(src);
-          for (let si = 0; si < sc.length; si++) {
-            const row = sc[si];
-            if (!talentAffixRowMatchesRank(row.conds, condRank)) continue;
-            const atb = row.atb;
-            const ratio = row.ratio;
-            if (typeof atb === "string" && typeof ratio === "number") parts.push(`${atb} ×${ratio}`);
+          if (hasScaling) {
+            for (let si = 0; si < sc.length; si++) {
+              const row = sc[si];
+              if (!talentAffixRowMatchesRank(row.conds, condRank)) continue;
+              const atb = row.atb;
+              const ratio = row.ratio;
+              if (typeof atb === "string" && typeof ratio === "number") parts.push(`${atb} ×${ratio}`);
+            }
+          } else if (baseVal > 0) {
+            parts.push(`${formatDmgAmount(baseVal)} flat damage`);
           }
           if (!parts.length) continue;
           raw.push({
@@ -6369,7 +6426,9 @@
   function computeEffectCombatScalingPreview(effect, sheetTotals, derived, combatCtx, scalingCondsRank, healPreview) {
     if (healPreview ? !effectScalingIsCombatHealPreview(effect) : !effectScalingIsCombatDamagePreview(effect)) return null;
     const sc = effect && effect.scaling;
-    if (!Array.isArray(sc) || !sc.length || !sheetTotals || !derived) return null;
+    const hasScaling = Array.isArray(sc) && sc.length > 0;
+    const baseVal = effect && typeof effect.baseVal === "number" && Number.isFinite(effect.baseVal) ? effect.baseVal : 0;
+    if ((!hasScaling && !(baseVal > 0)) || !sheetTotals || !derived) return null;
     const condRank =
       scalingCondsRank != null && Number.isFinite(scalingCondsRank)
         ? clamp(Math.floor(scalingCondsRank), 1, 99)
@@ -6382,12 +6441,21 @@
       if (W <= 0) W = null;
     }
 
-    let raw = 0;
+    let raw = baseVal > 0 ? baseVal : 0;
     let weaponFlatTotal = 0;
     const statRatioAcc = new Map();
     /** @type {Array<{ type: string, atb: string, name: string, ratio: number, ratioEffective?: number, sheet?: number|null, w?: number|null, aptitudeCurveLevel?: number|null, part: number }>} */
     const sheetLines = [];
-    for (let i = 0; i < sc.length; i++) {
+    if (baseVal > 0) {
+      sheetLines.push({
+        type: "aggregate",
+        atb: "",
+        name: "Base value",
+        ratio: 0,
+        part: baseVal,
+      });
+    }
+    for (let i = 0; i < (hasScaling ? sc.length : 0); i++) {
       const row = sc[i];
       const atb = row.atb;
       const ratio = row.ratio;
@@ -8533,6 +8601,13 @@
       const sd = SLOT_DEFS[wi];
       const sel = slotMap[sd.key];
       if (!sel || !sel.item) continue;
+      const ench = sel.enchantId ? enchantItemById(sel.enchantId) : null;
+      if (ench && Array.isArray(ench.skills)) {
+        for (let ei = 0; ei < ench.skills.length; ei++) {
+          const sid = ench.skills[ei] && ench.skills[ei].skill;
+          if (typeof sid === "string" && sid) hosts.add(sid);
+        }
+      }
       /** Same rule as **`equippedWeaponGrantedSkillIds`**: arsenal hosts are only **pickSkill1/2**, not every row on the weapon. */
       if (sd.weaponRole === "arsenal") {
         if (typeof sel.pickSkill1 === "string" && sel.pickSkill1) hosts.add(sel.pickSkill1);
@@ -9832,6 +9907,7 @@
     const ench = sel.enchantId ? enchantItemById(sel.enchantId) : null;
     if (ench) {
       const ex = flatEnchantContribution(ench, slotDef, { displayOnly: true });
+      mergeEnchantSkillStatusPreviewFlats(ex, ench);
       const formattedEnch = formatSimulatedStatLines(ex);
       for (const L of formattedEnch) lines.push(L);
       for (const row of ench.skills || []) {
@@ -10991,12 +11067,10 @@
   /**
    * @param {object} slotDef
    * @param {string} classId
-   * @param {{ includeUnnamed?: boolean }} [opts] when `includeUnnamed`, keep rows that only have an internal id (no localized name).
    * For **armor** and **weapons**, the modal filters by **`item.aptitudes`** vs **`classAptitudeRefs(classId)`** when **`classId`**
    * is set. **Neck, rings, and trinket** slots skip that filter so shared jewelry stays listable for every class.
    */
-  function itemsForSlot(slotDef, classId, opts) {
-    const includeUnnamed = !!(opts && opts.includeUnnamed);
+  function itemsForSlot(slotDef, classId) {
     let types = slotDef.types;
     if (slotDef.weaponSlot) {
       const aptRefs = classId ? classAptitudeRefs(classId) : new Set();
@@ -11007,7 +11081,6 @@
         list = list.filter((r) => canEquipMainSlot(r.type));
       }
       list = list.filter((r) => itemMatchesClassAptitudes(r, aptRefs));
-      if (!includeUnnamed) list = list.filter((r) => itemHasDisplayName(r));
       list.sort(sortItemsByRarityDescThenId);
       return list;
     }
@@ -11017,7 +11090,6 @@
       const aptRefs = classAptitudeRefs(classId);
       list = list.filter((r) => itemMatchesClassAptitudes(r, aptRefs));
     }
-    if (!includeUnnamed) list = list.filter((r) => itemHasDisplayName(r));
     list.sort(sortItemsByRarityDescThenId);
     return list;
   }
@@ -11396,11 +11468,14 @@
     setTimeout(() => overlay.focus(), 50);
   }
 
-  function filterModalItems(searchQ, rarityFilter) {
+  function filterModalItems(searchQ, rarityFilter, offhandCompatibleOnly) {
     const q = (searchQ || "").trim().toLowerCase();
     const filtered = modalSlotItems.filter((it) => {
       if (!it || it.id == null) return false;
       if (rarityFilter && rarityFilter !== "__all__" && it.rarity !== rarityFilter) {
+        return false;
+      }
+      if (offhandCompatibleOnly && !weaponCanEquipWithOffhand(it.type)) {
         return false;
       }
       if (!q) return true;
@@ -11492,6 +11567,8 @@
       draftEnchantId = cur.enchantId || null;
       draftAugmentId = cur.augmentId || null;
     }
+    const showOffhandCompatibleFilter =
+      sd.weaponSlot && (sd.weaponRole === "main" || sd.weaponRole === "arsenal");
 
     overlay.innerHTML = `
       <div class="gp-modal gp-modal--wide">
@@ -11506,6 +11583,14 @@
             <label for="gp-modal-search">Search</label>
             <input type="search" id="gp-modal-search" placeholder="Name, type, flavor…" autocomplete="off" />
           </div>
+          ${
+            showOffhandCompatibleFilter
+              ? `<div class="gp-modal__toggle gp-modal__toggle--inline">
+                  <input type="checkbox" id="gp-modal-offhand-compatible" />
+                  <label for="gp-modal-offhand-compatible">Can equip with off-hand</label>
+                </div>`
+              : ""
+          }
           <div class="gp-modal__rarity">
             <label for="gp-modal-rarity">Rarity</label>
             <select id="gp-modal-rarity">
@@ -11519,10 +11604,6 @@
               <span class="gear-planner__slider-val" id="gp-modal-ilvl-val" aria-live="polite">${draftIlvlStart}</span>
             </div>
             <input type="range" id="gp-modal-ilvl" min="1" max="${GEAR_LEVEL_MAX}" value="${draftIlvlStart}" step="1" />
-          </div>
-          <div class="gp-modal__toggle">
-            <input type="checkbox" id="gp-modal-include-unnamed" />
-            <label for="gp-modal-include-unnamed">Include items without a display name</label>
           </div>
         </div>
         <div class="gp-modal__body gp-modal__body--split">
@@ -11556,9 +11637,10 @@
     const slotOptsEl = overlay.querySelector("#gp-modal-slotopts");
     const listColEl = overlay.querySelector(".gp-modal__col--list");
     const listAugmentMount = overlay.querySelector("#gp-modal-list-augment-mount");
-    const chkIncludeUnnamed = overlay.querySelector("#gp-modal-include-unnamed");
+    const chkOffhandCompatible = overlay.querySelector("#gp-modal-offhand-compatible");
 
     let modalAugmentExpanded = false;
+    let modalPreviewExpanded = false;
 
     function applyModalAugmentExpandUi(rootEl) {
       if (!rootEl) return;
@@ -11591,7 +11673,6 @@
       slotOptsEl.hidden = slotOptsEl.childElementCount === 0;
     }
 
-    let draftIncludeUnnamed = false;
     /** Gear in this slot when the picker opened — compare preview stats vs this baseline. */
     const modalBaselineSlotSel = cloneSlotSel(cur);
 
@@ -11619,7 +11700,7 @@
     }
 
     function applyModalItemSource() {
-      slotItems = itemsForSlot(sd, classId, { includeUnnamed: draftIncludeUnnamed });
+      slotItems = itemsForSlot(sd, classId);
       modalSlotItems = slotItems;
       const raritiesNew = [...new Set(slotItems.map((x) => x.rarity || "Common"))];
       raritiesNew.sort((a, b) => RARITY_ORDER.indexOf(a) - RARITY_ORDER.indexOf(b));
@@ -11952,6 +12033,7 @@
       const hi = modalHighlightId;
       const it = hi ? itemById[hi] : null;
       if (!it) {
+        previewEl.classList.remove("gp-modal-preview--expanded");
         previewEl.innerHTML = `<div class="gp-modal-preview__empty">Select an item from the list.</div>`;
         syncModalSlotOptsColumnVisibility();
         return;
@@ -12001,20 +12083,37 @@
         : "";
       const prevAugPanel = overlay.querySelector("#gp-modal-augment-panel");
       const augmentPanelScrollTop = prevAugPanel ? prevAugPanel.scrollTop : null;
+      previewEl.classList.toggle("gp-modal-preview--expanded", modalPreviewExpanded);
       previewEl.innerHTML = `
-        <div class="gp-modal-preview__top">
-          <div class="gp-modal-preview__icon"></div>
-          <div class="gp-modal-preview__headtext">
-            <div class="gp-modal-preview__name ${rarityTextClass(effR)}">${escapeHtml(itemDisplayName(it))}</div>
-            ${subLineHtml}
+        <button type="button" class="gp-modal-preview__mobile-toggle" aria-expanded="${modalPreviewExpanded ? "true" : "false"}">
+          <span class="gp-modal-preview__mobile-toggle-text">
+            <span class="gp-modal-preview__mobile-toggle-kicker">Selected item</span>
+            <span class="gp-modal-preview__mobile-toggle-name ${rarityTextClass(effR)}">${escapeHtml(itemDisplayName(it))}</span>
+          </span>
+          <span class="gp-modal-preview__mobile-toggle-action">${modalPreviewExpanded ? "Hide details" : "Show details"}</span>
+        </button>
+        <div class="gp-modal-preview__content">
+          <div class="gp-modal-preview__top">
+            <div class="gp-modal-preview__icon"></div>
+            <div class="gp-modal-preview__headtext">
+              <div class="gp-modal-preview__name ${rarityTextClass(effR)}">${escapeHtml(itemDisplayName(it))}</div>
+              ${subLineHtml}
+            </div>
           </div>
+          ${flav ? `<p class="gp-modal-preview__flavor">${escapeHtml(flav)}</p>` : ""}
+          <div class="gp-modal-preview__stats">${statsHtml}</div>
+          <div id="gp-modal-augment-mount" class="gp-modal-augment-mount" hidden></div>
+          ${diffSec || ""}
         </div>
-        ${flav ? `<p class="gp-modal-preview__flavor">${escapeHtml(flav)}</p>` : ""}
-        <div class="gp-modal-preview__stats">${statsHtml}</div>
-        <div id="gp-modal-augment-mount" class="gp-modal-augment-mount" hidden></div>
-        ${diffSec || ""}
       `;
       mountLootIcon(previewEl.querySelector(".gp-modal-preview__icon"), it.gfx, "");
+      const previewToggle = previewEl.querySelector(".gp-modal-preview__mobile-toggle");
+      if (previewToggle) {
+        previewToggle.addEventListener("click", () => {
+          modalPreviewExpanded = !modalPreviewExpanded;
+          updatePreview();
+        });
+      }
       wireModalSkillDiffSkillTooltips(previewEl, ctxPv);
       rebuildModalAugmentSection();
       if (augmentPanelScrollTop !== null) {
@@ -12190,7 +12289,8 @@
       if (!grid) return;
       const filteredRaw = filterModalItems(
         inpSearch && inpSearch.value,
-        selRarityFilter && selRarityFilter.value
+        selRarityFilter && selRarityFilter.value,
+        chkOffhandCompatible && chkOffhandCompatible.checked
       );
       const filtered = sortFilteredWithSelectedFirst(filteredRaw, modalPinnedFirstId);
       if (!filtered.length) {
@@ -12300,11 +12400,8 @@
 
     inpSearch.addEventListener("input", refreshGrid);
     selRarityFilter.addEventListener("change", refreshGrid);
-    if (chkIncludeUnnamed) {
-      chkIncludeUnnamed.addEventListener("change", () => {
-        draftIncludeUnnamed = !!chkIncludeUnnamed.checked;
-        applyModalItemSource();
-      });
+    if (chkOffhandCompatible) {
+      chkOffhandCompatible.addEventListener("change", refreshGrid);
     }
     inpIlvl.addEventListener("input", () => {
       persistModalFreeIlvlFromSlider();
@@ -13398,7 +13495,13 @@
     root.innerHTML = `
 <div class="gear-planner">
   <header class="gear-planner__header">
-    <div class="gear-planner__title-logo" id="gp-title-logo" aria-hidden="true"></div>
+    <div class="gear-planner__header-main">
+      <div class="gear-planner__title-logo" id="gp-title-logo" aria-hidden="true"></div>
+      <a class="gear-planner__discord-link" href="https://discord.gg/Rsgf62YAQG" target="_blank" rel="noopener noreferrer" aria-label="Join the Farever Planner Discord server" title="Join the Discord server">
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 50 50" aria-hidden="true" focusable="false"><path d="M42.298,11.65c-0.676-1.021-1.633-1.802-2.768-2.256c-2.464-0.988-4.583-1.648-6.479-2.02C31.721,7.114,30.404,7.768,29.771,9l-0.158,0.308c-1.404-0.155-2.895-0.207-4.593-0.164c-1.741-0.042-3.237,0.009-4.643,0.164L20.22,9c-0.633-1.232-1.952-1.885-3.279-1.625c-1.896,0.371-4.016,1.031-6.479,2.02c-1.134,0.454-2.091,1.234-2.768,2.256c-4.721,7.131-6.571,14.823-5.655,23.517c0.032,0.305,0.202,0.578,0.461,0.741c3.632,2.29,6.775,3.858,9.891,4.936c1.303,0.455,2.748-0.054,3.517-1.229l1.371-2.101c-1.092-0.412-2.158-0.9-3.18-1.483c-0.479-0.273-0.646-0.884-0.373-1.363c0.273-0.481,0.884-0.65,1.364-0.373c3.041,1.734,6.479,2.651,9.942,2.651s6.901-0.917,9.942-2.651c0.479-0.277,1.09-0.108,1.364,0.373c0.273,0.479,0.106,1.09-0.373,1.363c-1.056,0.603-2.16,1.105-3.291,1.524l1.411,2.102c0.581,0.865,1.54,1.357,2.528,1.357c0.322,0,0.647-0.053,0.963-0.161c3.125-1.079,6.274-2.649,9.914-4.944c0.259-0.163,0.429-0.437,0.461-0.741C48.869,26.474,47.019,18.781,42.298,11.65z M18.608,28.983c-1.926,0-3.511-2.029-3.511-4.495c0-2.466,1.585-4.495,3.511-4.495s3.511,2.029,3.511,4.495C22.119,26.954,20.534,28.983,18.608,28.983z M31.601,28.957c-1.908,0-3.478-2.041-3.478-4.522s1.57-4.522,3.478-4.522c1.908,0,3.478,2.041,3.478,4.522S33.509,28.957,31.601,28.957z"></path></svg>
+        <span class="gear-planner__discord-bubble">Join the Discord to report bugs and share feedback!</span>
+      </a>
+    </div>
     <h1 class="gear-planner__title-sr">Gear planner</h1>
   </header>
   <div class="gear-planner__toolbar">
