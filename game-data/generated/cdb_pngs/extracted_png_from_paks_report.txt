@@ -1,0 +1,6 @@
+requested=0
+skipped_already_on_disk=0
+extracted_png=0
+dds_only=0
+still_missing_no_pak_hit=0
+

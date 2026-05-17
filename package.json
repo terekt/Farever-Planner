@@ -1,0 +1,10 @@
+{
+  "name": "farever-planner",
+  "private": true,
+  "scripts": {
+    "start": "npx --yes serve . -l tcp://localhost:8765 --no-etag",
+    "dev": "npx --yes live-server . --port=8765 --host=localhost --open=/ --ignore=node_modules",
+    "test": "npm run test:gear",
+    "test:gear": "node tests/gear-item-attribute-display.mjs"
+  }
+}

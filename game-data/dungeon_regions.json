@@ -1,0 +1,127 @@
+{
+  "regions": [
+    { "zonePrefix": "Z1", "displayName": "Skover Island" },
+    { "zonePrefix": "Z2", "displayName": "Valley of Eternal Autumn" }
+  ],
+  "hardFoeLevel": 20,
+  "dungeons": [
+    {
+      "activityId": "Bee_Hive",
+      "dungeonName": "Trunk of the Hivetree",
+      "bossUnit": "Gatsbee",
+      "faction": "Bee",
+      "normalFoeLevel": 12,
+      "zoneBaked": "Z1_Honeywoods",
+      "zonePrefix": "Z1",
+      "orb": { "x": -1095.267, "y": 878.2847 }
+    },
+    {
+      "activityId": "R1_POI_MokshisHivetree",
+      "dungeonName": "Lady Bee's Palace",
+      "bossUnit": "Mokshi",
+      "faction": "Bee",
+      "normalFoeLevel": 13,
+      "zoneBaked": "Z1_Honeywoods",
+      "zonePrefix": "Z1",
+      "orb": { "x": -1088.6527, "y": 716.9161 }
+    },
+    {
+      "activityId": "R1_POI_Boss_Ratsar",
+      "dungeonName": "Ratsar's Lair",
+      "bossUnit": "Ratsar",
+      "faction": "Kobold",
+      "normalFoeLevel": 10,
+      "zoneBaked": "Z1_Region",
+      "zonePrefix": "Z1",
+      "orb": { "x": -652.105, "y": 312.2291 }
+    },
+    {
+      "activityId": "R1_POI_AmaymonGoulp",
+      "dungeonName": "Mine Estrone",
+      "bossUnit": "Reblochonk",
+      "faction": "Kobold",
+      "normalFoeLevel": 7,
+      "zoneBaked": "Z1_Region",
+      "zonePrefix": "Z1",
+      "orb": { "x": -394.3333, "y": 1331.5764 }
+    },
+    {
+      "activityId": "R1_POI_Dungeon_Manfish_Ruins",
+      "dungeonName": "Lost City of Mayda",
+      "bossUnit": "Nepsilon",
+      "faction": "Manfish",
+      "normalFoeLevel": 5,
+      "zoneBaked": "Z1_Meridion",
+      "zonePrefix": "Z1",
+      "orb": { "x": -108.8143, "y": 1870.6666 }
+    },
+    {
+      "activityId": "R1_POI_Nepsid_Boss",
+      "dungeonName": "Crabgantua's Gorge",
+      "bossUnit": "Crabgantua",
+      "faction": "Manfish",
+      "normalFoeLevel": 8,
+      "zoneBaked": "Z1_Region",
+      "zonePrefix": "Z1",
+      "orb": { "x": 138.8815, "y": -864.1385 }
+    },
+    {
+      "activityId": "R1_POI_CrimsonSacristy",
+      "dungeonName": "Chakram's Chapel",
+      "bossUnit": "Phrixes",
+      "faction": "Crimson",
+      "zoneBaked": "Z2_Region",
+      "zonePrefix": "Z2",
+      "orb": { "x": 253.5256, "y": 1314.5277 }
+    },
+    {
+      "activityId": "R1_POI_Dungeon_CrimsonBarraks_POI_Def",
+      "dungeonName": "Crimson Barracks",
+      "bossUnit": "Crimson_Z1W_Captain_U",
+      "faction": "Crimson",
+      "zoneBaked": "Z2_Region",
+      "zonePrefix": "Z2",
+      "orb": { "x": 390.5366, "y": -283.4119 }
+    },
+    {
+      "activityId": "R1_POI_Dungeon_AbbandonedMines",
+      "dungeonName": "Ruins of Gorgon's Hollow",
+      "bossUnit": "Golcano",
+      "faction": "Kobold",
+      "normalFoeLevel": 15,
+      "zoneBaked": "Z2_Azuram",
+      "zonePrefix": "Z2",
+      "orb": { "x": 969.694, "y": 623.9705 }
+    },
+    {
+      "activityId": "R1_POI_GorgonsHollow",
+      "dungeonName": "Cheese Station",
+      "bossUnit": "MunsterChuck",
+      "faction": "Kobold",
+      "normalFoeLevel": 19,
+      "zoneBaked": "Z2_Region",
+      "zonePrefix": "Z2",
+      "orb": { "x": 1077.5, "y": -807.0 }
+    },
+    {
+      "activityId": "Z1_POI_Dungeon_ManfishAbyss",
+      "dungeonName": "Abyss of New Atlaan",
+      "bossUnit": "SpongeBlob",
+      "faction": "Manfish",
+      "normalFoeLevel": 16,
+      "zoneBaked": "Z2_Krisomal",
+      "zonePrefix": "Z2",
+      "orb": { "x": 1490.0, "y": 1551.0 }
+    },
+    {
+      "activityId": "R1_POI_CleodorasNest",
+      "dungeonName": "Honeyzabeth's Hivetrunk",
+      "bossUnit": "Cleodora",
+      "faction": "Bee",
+      "normalFoeLevel": 19,
+      "zoneBaked": "Z2_Nescent",
+      "zonePrefix": "Z2",
+      "orb": { "x": 2087.6712, "y": 161.376 }
+    }
+  ]
+}

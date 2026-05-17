@@ -1,0 +1,15 @@
+{
+  "cdb": "C:\\Users\\RV\\Downloads\\Farever Map\\game-data\\extracted\\res.light\\data.cdb",
+  "resRoot": "C:\\Users\\RV\\Downloads\\Farever Map\\game-data\\extracted\\res",
+  "distinctPngPathsInCdb": 1797,
+  "filesCopied": 1797,
+  "filesMissingMirror": 0,
+  "filesMissingSliceAtlasesDistinct": 0,
+  "combinedMissingFromPaksDistinct": 0,
+  "missingListsNote": "Use missing_assets_to_extract_from_paks.txt with tools/extract_cdb_pngs_from_paks.py (see script docstring).",
+  "sliceSpecs": 2663,
+  "slicePngsWritten": 2067,
+  "missingFilesSample": [],
+  "missingSliceAtlasSample": [],
+  "sliceErrorsSample": []
+}
