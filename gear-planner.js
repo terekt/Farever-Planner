@@ -471,6 +471,8 @@
   const PLANNER_SESSION_DRAFT_KEY = "farever-gear-planner-session-draft-v1";
 
   const WIRE_PREFIX_COMPRESSED = "f3.";
+  const WIRE_PREFIX_BROTLI = "f3b.";
+  const WIRE_PREFIX_ZSTD = "f3z.";
   const WIRE_PREFIX_JSON = "f3j.";
 
   function bytesToBase64Url(bytes) {
@@ -779,26 +781,39 @@
     return parsed;
   }
 
-  async function deflateRawUtf8(str) {
+  async function compressUtf8(str, format) {
     const input = new Blob([str]);
-    const stream = input.stream().pipeThrough(new CompressionStream("deflate-raw"));
+    const stream = input.stream().pipeThrough(new CompressionStream(format));
     const ab = await new Response(stream).arrayBuffer();
     return new Uint8Array(ab);
   }
 
-  async function inflateRawToUtf8(bytes) {
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  async function decompressToUtf8(bytes, format) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
     return await new Response(stream).text();
   }
 
   async function encodeBuildPayload(fullSnap) {
     const json = JSON.stringify(compactSnapshot(fullSnap));
     if (typeof CompressionStream !== "undefined") {
-      try {
-        const compressed = await deflateRawUtf8(json);
-        return WIRE_PREFIX_COMPRESSED + bytesToBase64Url(compressed);
-      } catch (_) {
-        /* fall through */
+      const candidates = [];
+      const formats = [
+        // Brotli usually wins for compact JSON and is documented by the Compression Streams API.
+        ["brotli", WIRE_PREFIX_BROTLI],
+        // Keep the original raw DEFLATE format as the broadly compatible fallback.
+        ["deflate-raw", WIRE_PREFIX_COMPRESSED],
+      ];
+      for (let i = 0; i < formats.length; i++) {
+        try {
+          const compressed = await compressUtf8(json, formats[i][0]);
+          candidates.push(formats[i][1] + bytesToBase64Url(compressed));
+        } catch (_) {
+          /* unsupported format */
+        }
+      }
+      if (candidates.length) {
+        candidates.sort((a, b) => a.length - b.length);
+        return candidates[0];
       }
     }
     return WIRE_PREFIX_JSON + bytesToBase64Url(new TextEncoder().encode(json));
@@ -820,7 +835,32 @@
     if (!s) return null;
     if (s.startsWith(WIRE_PREFIX_COMPRESSED)) {
       try {
-        const json = await inflateRawToUtf8(base64UrlToBytes(s.slice(WIRE_PREFIX_COMPRESSED.length)));
+        const json = await decompressToUtf8(
+          base64UrlToBytes(s.slice(WIRE_PREFIX_COMPRESSED.length)),
+          "deflate-raw"
+        );
+        return parseWireJson(json);
+      } catch (_) {
+        return null;
+      }
+    }
+    if (s.startsWith(WIRE_PREFIX_BROTLI)) {
+      try {
+        const json = await decompressToUtf8(
+          base64UrlToBytes(s.slice(WIRE_PREFIX_BROTLI.length)),
+          "brotli"
+        );
+        return parseWireJson(json);
+      } catch (_) {
+        return null;
+      }
+    }
+    if (s.startsWith(WIRE_PREFIX_ZSTD)) {
+      try {
+        const json = await decompressToUtf8(
+          base64UrlToBytes(s.slice(WIRE_PREFIX_ZSTD.length)),
+          "zstd"
+        );
         return parseWireJson(json);
       } catch (_) {
         return null;
