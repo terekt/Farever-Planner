@@ -146,6 +146,7 @@
 
   const CRUSADER_HOST_ID = "Priest_Crusader";
   const CRUSADER_STATUS_ID = "Priest_Crusader_Status";
+  const CRUSADER_M2_MASTERY_ID = "Priest_Crusader_M2";
 
   /**
    * Future heal / shield previews: multiplicative bonus from global buff hosts (**`TAttribute_ARatio`** on status rows).
@@ -175,6 +176,7 @@
   const FINISHER_SKILL_ID = "Rogue_Sig_Finisher";
   const FINISHER_M2_MASTERY_ID = "Rogue_Finisher_M2";
   const URGE_TO_KILL_HOST_ID = "Rogue_UrgeToKill";
+  const URGE_TO_KILL_M1_MASTERY_ID = "Rogue_UrgeToKill_M1";
   /** **Tide Warlord** — dual-axes weapon passive; preview buff is opt-in via corner toggle (no **`dmgMult`** script). */
   const DA_WATER_PASSIVE_ID = "DA_Water_Passive";
   const BLINK_M3_MASTERY_ID = "Mage_Blink_M3";
@@ -189,7 +191,8 @@
   const MAGE_TALENT_POWER_CIRCUIT_STATUS_ID = "Mage_Talent_PowerCircuit_Status";
   const MAGE_TALENT_AMPLIFICATION_ID = "Mage_Talent_Amplification";
   const MAGE_TALENT_HIGH_VOLTAGE_ID = "Mage_Talent_HighVoltage";
-  const MAGE_TALENT_CONDUIT_LIFEBOLT_CONDUIT_ID = "Mage_Talent_ConduitLifebolt_Conduit";
+  const MAGE_BASE_CONDUIT_IDS = ["Mage_Conduit_Projectile", "Mage_Conduit_Power"];
+  const PRIEST_PRAYER_SLOT_COUNT = 3;
   /** CDB **`skill.type`** values **0–4** — attack-chain skills (not **[WeaponSkill]** **7** / **24**). */
   const SKILL_TYPE_ATTACK_CHAIN_MIN = 0;
   const SKILL_TYPE_ATTACK_CHAIN_MAX = 4;
@@ -258,11 +261,17 @@
   function equippedWeaponGrantedSkillIds(selectionSnapshot) {
     const set = new Set();
     const slotMap = selectionSnapshot || selection;
+    const clsId = plannerSelectedClassId();
+    const cl =
+      plannerSkillCombatCtx && Number.isFinite(plannerSkillCombatCtx.charLevel)
+        ? plannerSkillCombatCtx.charLevel
+        : CHAR_LEVEL_DEFAULT;
     for (let wi = 0; wi < SLOT_DEFS.length; wi++) {
       const sd = SLOT_DEFS[wi];
       if (!sd.weaponSlot) continue;
       const sel = slotMap[sd.key];
       if (!sel || !sel.item) continue;
+      if (!slotSelectionIsActive(sd, sel, clsId, cl, slotMap)) continue;
       /** In-game only **bound** arsenal skills affect combat; unselected weapon skills are inactive. */
       if (sd.weaponRole === "arsenal") {
         if (typeof sel.pickSkill1 === "string" && sel.pickSkill1) set.add(sel.pickSkill1);
@@ -648,6 +657,22 @@
         }
         if (Object.keys(b).length) d.mb = b;
       }
+      if (Array.isArray(dp.mageConduitSkillIds)) {
+        const c = [];
+        for (let i = 0; i < dp.mageConduitSkillIds.length; i++) {
+          const sid = dp.mageConduitSkillIds[i];
+          if (typeof sid === "string" && sid.trim() && !c.includes(sid.trim())) c.push(sid.trim());
+        }
+        if (c.length) d.mc = c;
+      }
+      if (Array.isArray(dp.priestPrayerSkillIds)) {
+        const p = [];
+        for (let i = 0; i < dp.priestPrayerSkillIds.length; i++) {
+          const sid = dp.priestPrayerSkillIds[i];
+          if (typeof sid === "string" && sid.trim() && !p.includes(sid.trim())) p.push(sid.trim());
+        }
+        if (p.length) d.pp = p;
+      }
       if (
         typeof dp.previewFinisherComboPoints === "number" &&
         Number.isFinite(dp.previewFinisherComboPoints)
@@ -761,6 +786,8 @@
       if (d.st) full.damagePreview.previewStatusStacksBySkillId = d.st;
       if (d.ms && typeof d.ms === "object") full.damagePreview.classSkillMasteryBySkillId = d.ms;
       if (d.mb && typeof d.mb === "object") full.damagePreview.masteryBuffChoiceBySkillId = d.mb;
+      if (Array.isArray(d.mc)) full.damagePreview.mageConduitSkillIds = d.mc;
+      if (Array.isArray(d.pp)) full.damagePreview.priestPrayerSkillIds = d.pp;
       if (typeof d.fc === "number" && Number.isFinite(d.fc)) full.damagePreview.previewFinisherComboPoints = Math.floor(d.fc);
       if (typeof d.ufs === "number" && Number.isFinite(d.ufs)) full.damagePreview.previewUrgeFinisherStreak = Math.floor(d.ufs);
       if (d.sf === true) full.damagePreview.previewSurgeViolenceBoost = true;
@@ -909,6 +936,7 @@
   const BLOCK_MITIGATION_BASE_PCT = 50;
 
   const CLASS_IDS = ["Warrior", "Rogue", "Mage", "Priest"];
+  const ARSENAL_UNLOCK_LEVEL = 7;
 
   /** Sheet-style integer primaries (Vitality, Str, Dex, Faith, Int). */
   const PRIMARY_ATTRIBUTE_IDS = ["Vitality", "Strength", "Dexterity", "Faith", "Intellect"];
@@ -1113,6 +1141,10 @@
      * (**`Warrior_Rage_Strike`**). Toggle lives on **Final Combo Attack** weapon skill cards.
      */
     previewSurgeViolenceBoost: false,
+    /** Mage conduit skill ids selected in the custom conduit bar. */
+    mageConduitSkillIds: [],
+    /** Priest prayer skill ids selected in the custom Rosary bar. */
+    priestPrayerSkillIds: [],
   };
 
   const MYSTIC_EMPOWERMENT_HOST_ID = "Mage_MysticEmpowerment";
@@ -1993,6 +2025,9 @@
     const it = sel && effectiveItem(sel);
     if (!it) return combatCtx;
     const charLevel = combatCtx.charLevel != null ? combatCtx.charLevel : CHAR_LEVEL_DEFAULT;
+    const classId = combatCtx.classId || plannerSelectedClassId();
+    const sd = SLOT_DEFS.find((s) => s.key === slotKey);
+    if (sd && !slotSelectionIsActive(sd, sel, classId, charLevel, selection)) return combatCtx;
     const plannerTier = sel.ilvl != null && Number.isFinite(sel.ilvl) ? sel.ilvl : charLevel;
     const tierClamped = lootScaleTier(plannerTier);
     const aptitudeCurveLevel = tierClamped;
@@ -2931,6 +2966,45 @@
       if (typeof r === "string" && classAptRefs.has(r)) return true;
     }
     return false;
+  }
+
+  function itemFitsSlotType(slotDef, item) {
+    if (!slotDef || !item) return false;
+    if (slotDef.weaponSlot) {
+      if (!weaponTypes.has(item.type)) return false;
+      if (slotDef.weaponRole === "off") return canEquipOffSlot(item.type);
+      if (slotDef.weaponRole === "main" || slotDef.weaponRole === "arsenal") return canEquipMainSlot(item.type);
+      return false;
+    }
+    if (!slotDef.types || !slotDef.types.length) return true;
+    return slotDef.types.includes(item.type);
+  }
+
+  function itemMatchesSlotClass(slotDef, item, classId) {
+    if (!slotDef || !item || !classId) return true;
+    if (!slotDef.weaponSlot && SLOT_KEYS_NO_CLASS_APTITUDE_MODAL_FILTER.has(slotDef.key)) return true;
+    return itemMatchesClassAptitudes(item, classAptitudeRefs(classId));
+  }
+
+  function slotInactiveReason(slotDef, sel, classId, charLevel, slotMap) {
+    const item = sel && sel.item;
+    if (!slotDef || !item) return "";
+    const lv = Number.isFinite(charLevel) ? Math.floor(charLevel) : CHAR_LEVEL_DEFAULT;
+    if (slotDef.weaponRole === "arsenal" && lv < ARSENAL_UNLOCK_LEVEL) {
+      return `Arsenal unlocks at level ${ARSENAL_UNLOCK_LEVEL}`;
+    }
+    if (slotDef.weaponRole === "off") {
+      const map = slotMap || selection;
+      const mh = map && map.mainHand && map.mainHand.item;
+      if (mh && weaponOccupiesBothHands(mh.type)) return "Blocked by two-handed main hand";
+    }
+    if (!itemFitsSlotType(slotDef, item)) return "Item type no longer fits this slot";
+    if (!itemMatchesSlotClass(slotDef, item, classId)) return `Cannot equip on ${classId || "this class"}`;
+    return "";
+  }
+
+  function slotSelectionIsActive(slotDef, sel, classId, charLevel, slotMap) {
+    return !slotInactiveReason(slotDef, sel, classId, charLevel, slotMap);
   }
 
   function itemDisplayName(it) {
@@ -4022,6 +4096,111 @@
     return typeof r === "number" && r >= 1 ? Math.floor(r) : 0;
   }
 
+  function mageIsConduitSkillId(skillId) {
+    if (typeof skillId !== "string" || !skillId) return false;
+    if (skillId.indexOf("Mage_Conduit_") === 0) return true;
+    const sk = skillById[skillId];
+    return !!(sk && String(skillDisplayName(sk) || "").indexOf("Conduit:") === 0);
+  }
+
+  function mageConduitSlotCount(charLevel) {
+    const lv = Number.isFinite(charLevel) ? Math.floor(charLevel) : CHAR_LEVEL_DEFAULT;
+    return lv >= 4 ? 3 : 2;
+  }
+
+  function mageAvailableConduitSkillIds() {
+    const out = [];
+    function push(sid) {
+      if (typeof sid !== "string" || !sid || out.includes(sid) || !skillById[sid]) return;
+      out.push(sid);
+    }
+    for (let i = 0; i < MAGE_BASE_CONDUIT_IDS.length; i++) push(MAGE_BASE_CONDUIT_IDS[i]);
+    for (const talentId of Object.keys(talentAllocations)) {
+      if (mageTalentRank(talentId) <= 0) continue;
+      const talent = skillById[talentId];
+      const unlock =
+        talent &&
+        talent.props &&
+        talent.props.talent &&
+        typeof talent.props.talent.unlockConduit === "string"
+          ? talent.props.talent.unlockConduit
+          : "";
+      push(unlock);
+    }
+    return out;
+  }
+
+  function mageSelectedConduitSkillIds(charLevel) {
+    const src = Array.isArray(plannerDamagePreviewSettings.mageConduitSkillIds)
+      ? plannerDamagePreviewSettings.mageConduitSkillIds
+      : [];
+    const available = new Set(mageAvailableConduitSkillIds());
+    const max = mageConduitSlotCount(charLevel);
+    const out = [];
+    for (let i = 0; i < src.length && out.length < max; i++) {
+      const sid = src[i];
+      if (typeof sid === "string" && available.has(sid) && !out.includes(sid)) out.push(sid);
+    }
+    return out;
+  }
+
+  function sanitizeMageConduitSelection(charLevel) {
+    plannerDamagePreviewSettings.mageConduitSkillIds = mageSelectedConduitSkillIds(charLevel);
+  }
+
+  function setMageConduitSelected(skillId, selected, charLevel) {
+    const available = new Set(mageAvailableConduitSkillIds());
+    const cur = mageSelectedConduitSkillIds(charLevel).filter((sid) => sid !== skillId);
+    if (selected && typeof skillId === "string" && available.has(skillId)) {
+      cur.push(skillId);
+    }
+    plannerDamagePreviewSettings.mageConduitSkillIds = cur.slice(0, mageConduitSlotCount(charLevel));
+  }
+
+  function priestIsPrayerSkillId(skillId) {
+    if (typeof skillId !== "string" || !skillId) return false;
+    const sk = skillById[skillId];
+    return !!(sk && String(skillDisplayName(sk) || "").indexOf("Prayer:") === 0);
+  }
+
+  function priestAvailablePrayerSkillIds() {
+    const out = [];
+    const cls = unitSheet && unitSheet.lines ? unitSheet.lines.find((r) => r.id === "Priest") : null;
+    const classRows = (cls && cls.skills) || [];
+    for (let i = 0; i < classRows.length; i++) {
+      const sid = classRows[i] && classRows[i].skill;
+      if (typeof sid !== "string" || !sid || !priestIsPrayerSkillId(sid)) continue;
+      if (!out.includes(sid)) out.push(sid);
+    }
+    return out;
+  }
+
+  function priestSelectedPrayerSkillIds() {
+    const src = Array.isArray(plannerDamagePreviewSettings.priestPrayerSkillIds)
+      ? plannerDamagePreviewSettings.priestPrayerSkillIds
+      : [];
+    const available = new Set(priestAvailablePrayerSkillIds());
+    const out = [];
+    for (let i = 0; i < src.length && out.length < PRIEST_PRAYER_SLOT_COUNT; i++) {
+      const sid = src[i];
+      if (typeof sid === "string" && available.has(sid) && !out.includes(sid)) out.push(sid);
+    }
+    return out;
+  }
+
+  function sanitizePriestPrayerSelection() {
+    plannerDamagePreviewSettings.priestPrayerSkillIds = priestSelectedPrayerSkillIds();
+  }
+
+  function setPriestPrayerSelected(skillId, selected) {
+    const available = new Set(priestAvailablePrayerSkillIds());
+    const cur = priestSelectedPrayerSkillIds().filter((sid) => sid !== skillId);
+    if (selected && typeof skillId === "string" && available.has(skillId)) {
+      cur.push(skillId);
+    }
+    plannerDamagePreviewSettings.priestPrayerSkillIds = cur.slice(0, PRIEST_PRAYER_SLOT_COUNT);
+  }
+
   /** Rounded-rect **active** vs **circular** passive icon: **`skill.type` 24** (weapon passive) or **`skill.nature` 5** (Passive). */
   function skillIconIsPassiveFrame(sk) {
     if (!sk) return false;
@@ -4242,6 +4421,8 @@
     for (let ri = 0; ri < classRows.length; ri++) {
       const sid = classRows[ri] && classRows[ri].skill;
       if (typeof sid !== "string" || !sid || CLASS_SKILLS_HIDDEN_IDS.has(sid)) continue;
+      if (mageIsConduitSkillId(sid)) continue;
+      if (priestIsPrayerSkillId(sid)) continue;
       const sk = skillById[sid];
       if (!sk || skillIconIsPassiveFrame(sk)) continue;
       if (!skillMasteryEntries(sk).length) continue;
@@ -4274,7 +4455,7 @@
 
   function isSkillDescDamagePreviewKey(key) {
     const k = String(key || "").toLowerCase();
-    return k === "dmg" || k === "dmgs" || k === "heal" || k === "dmg2" || k === "dmg3";
+    return k === "dmg" || k === "dmgs" || k === "heal" || k === "shield" || k === "dmg2" || k === "dmg3";
   }
 
   /** Internal preview line marker + skill id (`formatPlainStatLineHtml` only). */
@@ -4539,6 +4720,10 @@
   function skillHostStepEffectMatchesMastery(hostSk, step, effect) {
     if (!hostSk) return true;
     const sel = selectedClassSkillMasteryId(hostSk.id, hostSk);
+    return skillStepEffectMatchesMasteryId(step, effect, sel);
+  }
+
+  function skillStepEffectMatchesMasteryId(step, effect, masteryId) {
     const gates = [];
     if (step && step.cond && step.cond.mastery != null && step.cond.mastery !== "") {
       gates.push(String(step.cond.mastery));
@@ -4547,15 +4732,16 @@
       gates.push(String(effect.cond.mastery));
     }
     if (!gates.length) return true;
-    if (!sel) return false;
+    if (!masteryId) return false;
     for (let gi = 0; gi < gates.length; gi++) {
-      if (gates[gi] !== String(sel)) return false;
+      if (gates[gi] !== String(masteryId)) return false;
     }
     return true;
   }
 
   /** Sheet affix stack count for aura statuses (not × **`maxStacks`** prayer stacks). */
   function statusPreviewSheetAffixStacks(statusSk) {
+    if (statusSk && statusSk.id === CRUSADER_STATUS_ID) return 1;
     const stacks = statusPreviewEffectiveStacks(statusSk);
     if (stacks <= 0) return 0;
     if (statusSk && STATUS_PREVIEW_AURA_STACK_OVERRIDES.has(statusSk.id)) return 1;
@@ -4567,9 +4753,6 @@
     if (!hostSk || !statusId) return false;
     if (statusId === JUDGMENT_STATUS_ID && hostSk.id === JUDGMENT_HOST_ID) {
       return hostMid === JUDGMENT_M1_MASTERY_ID;
-    }
-    if (statusId === BLESSING_STATUS_ID && hostSk.id === BLESSING_OF_FERVOR_HOST_ID) {
-      return hostMid === BLESSING_M1_MASTERY_ID;
     }
     return true;
   }
@@ -4598,7 +4781,7 @@
       const ax = st.affixes[i];
       if (!ax || ax.ref !== "TAttribute_ARatio") continue;
       if ((ax.target && ax.target.attribute) !== attr) continue;
-      if (typeof ax.val === "number" && Number.isFinite(ax.val)) return ax.val;
+      if (typeof ax.val === "number" && Number.isFinite(ax.val)) return statusPreviewAffixVal(st, ax);
     }
     return defaultRatio;
   }
@@ -4697,7 +4880,10 @@
       const finSk = skillById[FINISHER_SKILL_ID];
       const perCp = finSk && finSk.vars && typeof finSk.vars.var1 === "number" ? finSk.vars.var1 : 0.3;
       if (cp > 0 && perCp > 0) m *= 1 + cp * perCp;
-      if (passiveScriptGlobalMultApplies(URGE_TO_KILL_HOST_ID)) {
+      const urgeSk = skillById[URGE_TO_KILL_HOST_ID];
+      const urgeM1Selected =
+        urgeSk && selectedClassSkillMasteryId(URGE_TO_KILL_HOST_ID, urgeSk) === URGE_TO_KILL_M1_MASTERY_ID;
+      if (urgeM1Selected && passiveScriptGlobalMultApplies(URGE_TO_KILL_HOST_ID)) {
         const streak = previewUrgeFinisherStreakCount();
         if (streak > 0) m *= 1 + streak * 0.1;
       }
@@ -4819,9 +5005,11 @@
     if (!sk || !Array.isArray(sk.affixes) || !sk.affixes.length) return null;
     let ordinal = -1;
     if (key === "val" || key === "val1") ordinal = 0;
-    else if (key === "val2") ordinal = 1;
-    else if (key === "val3") ordinal = 2;
-    else return null;
+    else {
+      const m = /^val([2-9]\d*)$/.exec(key);
+      if (!m) return null;
+      ordinal = parseInt(m[1], 10) - 1;
+    }
     const rank =
       descRank != null && Number.isFinite(descRank) ? Math.max(1, Math.floor(descRank)) : 1;
     let matched = 0;
@@ -4872,6 +5060,9 @@
     if (!ax || typeof ax.val !== "number" || !Number.isFinite(ax.val)) return null;
     const slowPct = affixSlowByPercentFromRow(ax);
     if (slowPct != null) return slowPct;
+    if ((ax.target && ax.target.attribute) === "DamageTakenModifier" && ax.val < 0) {
+      return formatSkillPercentFromRatio(Math.abs(ax.val));
+    }
     if (affixRefIsFlatPercentDisplay(ax)) return formatSkillPercentFromAffixFlatVal(ax.val);
     return formatSkillPercentFromRatio(ax.val);
   }
@@ -4913,8 +5104,11 @@
     const slowPct = affixSlowByPercentFromRow(ax);
     if (slowPct != null) return slowPct;
     const vAdj = adjustPairedTierLowFlatPercentMagnitudeForDesc(ax, sk, condsRank);
+    if ((ax.target && ax.target.attribute) === "DamageTakenModifier" && vAdj < 0) {
+      return formatSkillPercentFromRatio(Math.abs(vAdj));
+    }
     if (affixRefIsFlatPercentDisplay(ax)) return formatSkillPercentFromAffixFlatVal(vAdj);
-    return formatSkillPercentFromRatio(ax.val);
+    return formatSkillPercentFromRatio(vAdj);
   }
 
   /** Top-level skill `duration` (seconds), e.g. status buff length on `Trinket_*_Status`. */
@@ -5265,13 +5459,22 @@
   }
 
   /** Unique equipped weapons for the skills panel (main → off → arsenal), by item id. */
-  function collectEquippedWeaponsForSkillPanel() {
+  function collectEquippedWeaponsForSkillPanel(classId, charLevel) {
     const out = [];
     const seen = new Set();
+    const clsId = classId || plannerSelectedClassId();
+    const cl =
+      Number.isFinite(charLevel)
+        ? charLevel
+        : plannerSkillCombatCtx && Number.isFinite(plannerSkillCombatCtx.charLevel)
+          ? plannerSkillCombatCtx.charLevel
+          : CHAR_LEVEL_DEFAULT;
 
     function push(key, label) {
       const sel = selection[key];
       if (!sel || !sel.item) return;
+      const sd = SLOT_DEFS.find((s) => s.key === key);
+      if (sd && !slotSelectionIsActive(sd, sel, clsId, cl, selection)) return;
       const id = sel.item.id;
       if (seen.has(id)) return;
       seen.add(id);
@@ -5280,7 +5483,10 @@
 
     push("mainHand", "Main hand");
     const mh = selection.mainHand && selection.mainHand.item;
-    if (!mh || !weaponOccupiesBothHands(mh.type)) {
+    const mhSd = SLOT_DEFS.find((s) => s.key === "mainHand");
+    const mhActive =
+      mh && mhSd && slotSelectionIsActive(mhSd, selection.mainHand, clsId, cl, selection);
+    if (!mhActive || !weaponOccupiesBothHands(mh.type)) {
       push("offHand", "Off-hand");
     }
     const aw = selection.arsenal && selection.arsenal.item;
@@ -5699,7 +5905,12 @@
       if (!skillDamageScriptConditionalsFromSkill(ps).length) return;
       push(ps);
     }
-    const weapons = collectEquippedWeaponsForSkillPanel();
+    const clsId = plannerSelectedClassId();
+    const cl =
+      plannerSkillCombatCtx && Number.isFinite(plannerSkillCombatCtx.charLevel)
+        ? plannerSkillCombatCtx.charLevel
+        : CHAR_LEVEL_DEFAULT;
+    const weapons = collectEquippedWeaponsForSkillPanel(clsId, cl);
     for (let wi = 0; wi < weapons.length; wi++) {
       const it = weapons[wi].item;
       if (!it || !Array.isArray(it.skills)) continue;
@@ -5709,16 +5920,35 @@
         considerPassive(skillById[sid]);
       }
     }
-    const clsId = plannerSelectedClassId();
     const cls = unitSheet && unitSheet.lines && clsId ? unitSheet.lines.find((r) => r.id === clsId) : null;
     const classRows = (cls && cls.skills) || [];
     for (let ci = 0; ci < classRows.length; ci++) {
       const sid = classRows[ci] && classRows[ci].skill;
       if (typeof sid !== "string" || CLASS_SKILLS_HIDDEN_IDS.has(sid)) continue;
+      if (mageIsConduitSkillId(sid)) continue;
+      if (priestIsPrayerSkillId(sid)) continue;
       const sk = skillById[sid];
       if (!sk) continue;
       if (skillIconIsPassiveFrame(sk)) considerPassive(sk);
       else if (classSkillIsNonDamageBuffContributor(sk)) push(sk);
+    }
+    if (clsId === "Mage") {
+      const conduits = mageSelectedConduitSkillIds();
+      for (let mi = 0; mi < conduits.length; mi++) {
+        const sk = skillById[conduits[mi]];
+        if (!sk) continue;
+        if (skillIconIsPassiveFrame(sk)) considerPassive(sk);
+        else if (classSkillIsNonDamageBuffContributor(sk)) push(sk);
+      }
+    }
+    if (clsId === "Priest") {
+      const prayers = priestSelectedPrayerSkillIds();
+      for (let pi = 0; pi < prayers.length; pi++) {
+        const sk = skillById[prayers[pi]];
+        if (!sk) continue;
+        if (skillIconIsPassiveFrame(sk)) considerPassive(sk);
+        else if (classSkillIsNonDamageBuffContributor(sk)) push(sk);
+      }
     }
     return out;
   }
@@ -5731,10 +5961,14 @@
   }
 
   function equippedPassivesWithScriptDamageMemo() {
-    const weapons = collectEquippedWeaponsForSkillPanel();
+    const cl =
+      plannerSkillCombatCtx && Number.isFinite(plannerSkillCombatCtx.charLevel)
+        ? plannerSkillCombatCtx.charLevel
+        : CHAR_LEVEL_DEFAULT;
+    const weapons = collectEquippedWeaponsForSkillPanel(plannerSelectedClassId(), cl);
     const wids = weapons.map((w) => (w.item && w.item.id) || "").join("\x1e");
     const clsId = plannerSelectedClassId();
-    const sig = `${clsId}\x1e${wids}`;
+    const sig = `${clsId}\x1e${cl}\x1e${wids}`;
     if (sig !== passiveScriptEquipmentMemoSig || !equippedPassivesWithScriptMemoList) {
       passiveScriptEquipmentMemoSig = sig;
       equippedPassivesWithScriptMemoList = globalBuffContributorsFromLoadout();
@@ -5964,6 +6198,7 @@
 
     const previews = [];
     const healPreviews = [];
+    const shieldPreviews = [];
     if (sk && combatCtx && combatCtx.sheetTotals && combatCtx.derived) {
       const sheetTotals = combatCtx.sheetTotals;
       const derived = combatCtx.derived;
@@ -5993,6 +6228,12 @@
               ph.scriptHostSkill = src;
               ph.previewMergeStep = step;
               healPreviews.push(ph);
+            }
+            const ps = computeEffectShieldPreview(e, sheetTotals, derived, combatCtx, condRank);
+            if (ps) {
+              ps.scriptHostSkill = src;
+              ps.previewMergeStep = step;
+              shieldPreviews.push(ps);
             }
           }
         }
@@ -6060,7 +6301,7 @@
     }
     if (sk && combatCtx && combatCtx.sheetTotals && combatCtx.derived && healPreviews.length) {
       const derived = combatCtx.derived;
-      const preCritFlat = plannerPreCritFlatDamageMultiplier(derived);
+      const supportM = plannerHealPreviewMultiplier(derived, sk);
       const echoM = mageEchoingLifeHealMultiplier(sk);
       let sumHeal = 0;
       const valParts = [];
@@ -6068,9 +6309,9 @@
       for (let hi = 0; hi < healPreviews.length; hi++) {
         const h = healPreviews[hi];
         const rawHit = typeof h.raw === "number" && Number.isFinite(h.raw) ? h.raw : 0;
-        const baseM = typeof h.mult === "number" && Number.isFinite(h.mult) ? h.mult : 1;
-        const roundedH = hlMathRound(Math.max(0, rawHit * baseM * preCritFlat * echoM));
-        sumHeal += roundedH;
+        const preCritHeal = Math.max(0, rawHit * supportM * echoM);
+        const roundedH = hlMathRound(preCritHeal);
+        sumHeal += plannerExpectedDamageEvAfterCritRound(preCritHeal, derived);
         valParts.push(String(roundedH));
         if (h.scalingDetail) detParts.push(h.scalingDetail);
       }
@@ -6080,6 +6321,28 @@
         detail: detParts.length ? detParts.join(" · ") : null,
         finalExpectedSum: sumHeal,
         damagePreviewHits: healPreviews,
+      });
+    }
+    if (sk && combatCtx && combatCtx.sheetTotals && combatCtx.derived && shieldPreviews.length) {
+      const derived = combatCtx.derived;
+      const supportM = plannerShieldPreviewMultiplier(derived);
+      let sumShield = 0;
+      const valParts = [];
+      const detParts = [];
+      for (let si = 0; si < shieldPreviews.length; si++) {
+        const h = shieldPreviews[si];
+        const rawHit = typeof h.raw === "number" && Number.isFinite(h.raw) ? h.raw : 0;
+        const roundedS = hlMathRound(Math.max(0, rawHit * supportM));
+        sumShield += roundedS;
+        valParts.push(String(roundedS));
+        if (h.scalingDetail) detParts.push(h.scalingDetail);
+      }
+      rows.push({
+        valPart: valParts.length > 1 ? valParts.join(" + ") : valParts[0],
+        kindLabel: "Shield",
+        detail: detParts.length ? detParts.join(" · ") : null,
+        finalExpectedSum: sumShield,
+        damagePreviewHits: shieldPreviews,
       });
     }
     for (const [mk, text] of detailByMerge) {
@@ -6165,6 +6428,7 @@
           if (!skillHoldMergedDamageEffectIncluded(step, e, holdTier)) continue;
           if (computeEffectDamagePreview(e, sheetTotals, derived, combatCtx, condRank)) return true;
           if (computeEffectHealPreview(e, sheetTotals, derived, combatCtx, condRank)) return true;
+          if (computeEffectShieldPreview(e, sheetTotals, derived, combatCtx, condRank)) return true;
         }
       }
     }
@@ -6207,6 +6471,15 @@
     if (tgt === "Spark") return false;
     const ek = effect.effect;
     return ek === 1;
+  }
+
+  /** **effect 2** shield scaling — applies ShieldPower/Fervor, not damage crit/armor/mastery. */
+  function effectScalingIsCombatShieldPreview(effect) {
+    if (!effect) return false;
+    const tgt = effect.target && effect.target.atb != null ? String(effect.target.atb) : "";
+    if (tgt === "Spark") return false;
+    const ek = effect.effect;
+    return ek === 2;
   }
 
   /** True when **`steps`** contain a combat heal preview row (**`effect` 1** + scaling). */
@@ -6418,13 +6691,19 @@
   }
 
   /**
-   * Shared **`scaling[]`** → **`raw`** / **`sheetLines`** for combat **`effect` 0** (damage) or **`effect` 1** (heal).
-   * Heals reuse weapon-split aptitude logic; **`isHealPreview`** is set only for **`effect` 1**.
-   * @param {boolean} healPreview
+   * Shared **`scaling[]`** → **`raw`** / **`sheetLines`** for combat **`effect` 0** (damage), **`effect` 1** (heal),
+   * or **`effect` 2** (shield). Heals/shields reuse weapon-split aptitude logic but skip damage-only mastery.
+   * @param {boolean|string} previewKind **false** / `"damage"`, **true** / `"heal"`, or `"shield"`.
    * @param {number} [scalingCondsRank]
    */
-  function computeEffectCombatScalingPreview(effect, sheetTotals, derived, combatCtx, scalingCondsRank, healPreview) {
-    if (healPreview ? !effectScalingIsCombatHealPreview(effect) : !effectScalingIsCombatDamagePreview(effect)) return null;
+  function computeEffectCombatScalingPreview(effect, sheetTotals, derived, combatCtx, scalingCondsRank, previewKind) {
+    const healPreview = previewKind === true || previewKind === "heal";
+    const shieldPreview = previewKind === "shield";
+    if (shieldPreview) {
+      if (!effectScalingIsCombatShieldPreview(effect)) return null;
+    } else if (healPreview) {
+      if (!effectScalingIsCombatHealPreview(effect)) return null;
+    } else if (!effectScalingIsCombatDamagePreview(effect)) return null;
     const sc = effect && effect.scaling;
     const hasScaling = Array.isArray(sc) && sc.length > 0;
     const baseVal = effect && typeof effect.baseVal === "number" && Number.isFinite(effect.baseVal) ? effect.baseVal : 0;
@@ -6534,14 +6813,17 @@
     }
     const aff = effect.affinity != null ? String(effect.affinity) : "Hit";
     const root = affinityDamageRoot(aff);
-    const mult = plannerBaseUiHitDamageMultiplier(derived, root);
+    const isSupportPreview = healPreview || shieldPreview;
+    const mult = isSupportPreview ? 1 : plannerBaseUiHitDamageMultiplier(derived, root);
     const exactUiBase = raw * mult;
     const rounded = hlMathRound(exactUiBase);
     const uiBaseValPart = formatUiBaseDamageValPart(exactUiBase);
 
     const detailBits = [];
-    if (weaponFlatTotal >= 0.005)
-      detailBits.push(`${hlMathRound(weaponFlatTotal)} flat ${healPreview ? "heal" : "damage"}`);
+    if (weaponFlatTotal >= 0.005) {
+      const noun = shieldPreview ? "shield" : healPreview ? "heal" : "damage";
+      detailBits.push(`${hlMathRound(weaponFlatTotal)} flat ${noun}`);
+    }
     const statKeys = [...statRatioAcc.keys()].sort((a, b) =>
       displayNameForAttr(a).localeCompare(displayNameForAttr(b))
     );
@@ -6564,6 +6846,7 @@
       affinityRoot: root,
     };
     if (healPreview) out.isHealPreview = true;
+    if (shieldPreview) out.isShieldPreview = true;
     return out;
   }
 
@@ -6589,6 +6872,14 @@
    */
   function computeEffectHealPreview(effect, sheetTotals, derived, combatCtx, scalingCondsRank) {
     return computeEffectCombatScalingPreview(effect, sheetTotals, derived, combatCtx, scalingCondsRank, true);
+  }
+
+  /**
+   * **`effect.effect === 2`** shield scaling — in game this goes through **`getShieldPowerMultiplier`** and does not crit.
+   * @param {number} [scalingCondsRank]
+   */
+  function computeEffectShieldPreview(effect, sheetTotals, derived, combatCtx, scalingCondsRank) {
+    return computeEffectCombatScalingPreview(effect, sheetTotals, derived, combatCtx, scalingCondsRank, "shield");
   }
 
   /**
@@ -6716,6 +7007,19 @@
     m *= plannerDerivedAdditivePctMult(derived, ["DamageModifier_pct"]);
     m *= plannerDamagePreviewExtraMoreMult();
     return m;
+  }
+
+  function plannerSupportFervorMultiplier(derived) {
+    if (!derived || typeof derived !== "object") return 1;
+    return 1 + (derived.Fervor_pct || 0) / 100;
+  }
+
+  function plannerHealPreviewMultiplier(derived) {
+    return plannerSupportFervorMultiplier(derived) * globalClassBuffHealMultiplier();
+  }
+
+  function plannerShieldPreviewMultiplier(derived) {
+    return plannerSupportFervorMultiplier(derived) * globalClassBuffShieldMultiplier();
   }
 
   /**
@@ -6895,6 +7199,28 @@
       detail: xmNote,
       mult: xm,
     });
+    return out;
+  }
+
+  function plannerSupportPreviewMultiplierLines(derived, kind) {
+    if (!derived || typeof derived !== "object") return [];
+    const out = [];
+    const fervPct = derived.Fervor_pct || 0;
+    out.push({
+      id: "fervor",
+      label: "Fervor",
+      detail: `${fervPct >= 0 ? "+" : ""}${formatMultiplierLabel(fervPct)}% on sheet`,
+      mult: plannerSupportFervorMultiplier(derived),
+    });
+    const supportM = kind === "shield" ? globalClassBuffShieldMultiplier() : globalClassBuffHealMultiplier();
+    if (Math.abs(supportM - 1) > 1e-6) {
+      out.push({
+        id: kind === "shield" ? "shieldpower" : "healgiven",
+        label: kind === "shield" ? "Shield power" : "Healing bonus",
+        detail: "active support status buffs",
+        mult: supportM,
+      });
+    }
     return out;
   }
 
@@ -7104,6 +7430,15 @@
     );
   }
 
+  function skillPreviewRowIsShieldOnly(row) {
+    if (!row) return false;
+    const kl = String(row.kindLabel || "").toLowerCase();
+    if (kl.includes("shield")) return true;
+    if (kl.includes("healing")) return false;
+    const hits = row.damagePreviewHits || [];
+    return hits.length > 0 && hits.every((h) => h && h.isShieldPreview);
+  }
+
   /**
    * Second block under base tooltip — **expected average** per damage family (**`gp-char-skill__final-dmg`**): **Fervor**,
    * **`DamageModifier`**, **`extraMoreDamageMult`**, foe **armor / pen**, then **`hlMathRound`**, then **crit** EV
@@ -7117,9 +7452,11 @@
     const foeHd = foePlannerDisplayLabel(foeRaw);
     const rows = collectMergedDamageRows(sk, combatCtx);
     let inner = "";
+    let hasDamagePreviewRow = false;
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (row.valPart == null || row.finalExpectedSum == null || !Number.isFinite(row.finalExpectedSum)) continue;
+      if (!skillPreviewRowIsShieldOnly(row)) hasDamagePreviewRow = true;
       const fin = formatDmgAmount(Math.max(0, row.finalExpectedSum));
       const hasDet = row.detail != null && String(row.detail).trim() !== "";
       inner += `<div class="gp-char-skill__final-dmg-row gp-char-skill__final-dmg-row--merged">`;
@@ -7133,12 +7470,13 @@
       inner += `</div>`;
     }
     if (!inner) return "";
-    const kick = plannerDamagePreviewKickerLabel();
+    const kick = hasDamagePreviewRow ? plannerDamagePreviewKickerLabel() : "Preview";
+    const meta = hasDamagePreviewRow ? `L${String(ml)} · ${foeHd}` : "Your stats";
     return (
       `<div class="gp-char-skill__final-dmg">` +
       `<div class="gp-char-skill__final-dmg-hd">` +
       `<span class="gp-char-skill__final-dmg-kicker">${escapeHtml(kick)}</span>` +
-      `<span class="gp-char-skill__final-dmg-meta">L${escapeHtml(String(ml))} · ${escapeHtml(foeHd)}</span>` +
+      `<span class="gp-char-skill__final-dmg-meta">${escapeHtml(meta)}</span>` +
       `</div>` +
       inner +
       `</div>`
@@ -7163,11 +7501,30 @@
   function previewsSubsetForDescPlaceholderKey(previews, key) {
     const k = String(key || "").toLowerCase();
     if (!previews || !previews.length) return [];
+    if (k === "heal" || k === "shield") return previews.slice();
     if (k === "dmg") return previews[0] ? [previews[0]] : [];
-    if (k === "dmg2") return previews[1] ? [previews[1]] : [];
-    if (k === "dmg3") return previews[2] ? [previews[2]] : [];
+    if (k === "dmg2") {
+      const p = descNumberedDamagePreview(previews, 1);
+      return p ? [p] : [];
+    }
+    if (k === "dmg3") {
+      const p = descNumberedDamagePreview(previews, 2);
+      return p ? [p] : [];
+    }
     if (k === "dmgs") return previews.slice();
     return previews;
+  }
+
+  function descNumberedDamagePreview(previews, index) {
+    if (!previews || !previews.length) return null;
+    if (previews[index]) return previews[index];
+    const masteryGated = [];
+    for (let i = 0; i < previews.length; i++) {
+      const p = previews[i];
+      const st = p && p.previewMergeStep;
+      if (st && st.cond && st.cond.mastery != null && st.cond.mastery !== "") masteryGated.push(p);
+    }
+    return masteryGated.length === 1 ? masteryGated[0] : null;
   }
 
   function formatMultiplierLabel(n) {
@@ -7240,27 +7597,24 @@
 
   function formatDamagePreviewHitSectionHtml(p, combatCtx, hitIdx, hitMode, hostSkForScript) {
     if (!p) return "";
-    if (p.isHealPreview) {
+    if (p.isHealPreview || p.isShieldPreview) {
+      const supportKind = p.isShieldPreview ? "shield" : "heal";
+      const supportLabel = p.isShieldPreview ? "Shield" : "Healing";
       const der = combatCtx && combatCtx.derived;
       const mode = hitMode === "desc" ? "desc" : "expected";
       let h = "";
       const lines = Array.isArray(p.sheetLines) ? p.sheetLines : [];
       for (let li = 0; li < lines.length; li++) h += formatSheetLineEntryHtml(lines[li]);
       const raw = typeof p.raw === "number" && Number.isFinite(p.raw) ? p.raw : 0;
-      h += dmgTipTripleRowHtml("Raw (heal subtotal)", escapeHtml(formatDmgAmount(raw)), "—");
+      h += dmgTipTripleRowHtml(`Raw (${supportKind} subtotal)`, escapeHtml(formatDmgAmount(raw)), "—");
       if (der && combatCtx && hostSkForScript) {
-        const baseM = typeof p.mult === "number" && Number.isFinite(p.mult) ? p.mult : 1;
-        const masLab = `Mastery on heal <span class="gp-muted gp-dmg-tip-row__sub">×${formatMultiplierLabel(
-          baseM
-        )}</span>`;
-        h += dmgTipTripleRowHtml(masLab, mode === "desc" ? escapeHtml(String(hlMathRound(raw * baseM))) : "", `×${escapeHtml(formatMultiplierLabel(baseM))}`);
-        const postLines = plannerPostBaseDamageMultiplierLines(der);
+        const postLines = plannerSupportPreviewMultiplierLines(der, supportKind);
         for (let pi = 0; pi < postLines.length; pi++) {
           const L = postLines[pi];
           const lab = `${escapeHtml(L.label)} <span class="gp-muted gp-dmg-tip-row__sub">${escapeHtml(L.detail)}</span>`;
           h += dmgTipTripleRowHtml(lab, "", `×${escapeHtml(formatMultiplierLabel(L.mult))}`);
         }
-        const echoM = mageEchoingLifeHealMultiplier(hostSkForScript);
+        const echoM = p.isHealPreview ? mageEchoingLifeHealMultiplier(hostSkForScript) : 1;
         if (Math.abs(echoM - 1) > 1e-6) {
           h += dmgTipTripleRowHtml(
             `${escapeHtml("Echoing Life (Chaincast)")} <span class="gp-muted gp-dmg-tip-row__sub">weapon heal</span>`,
@@ -7268,11 +7622,20 @@
             `×${escapeHtml(formatMultiplierLabel(echoM))}`
           );
         }
+        const supportM = p.isShieldPreview ? plannerShieldPreviewMultiplier(der) : plannerHealPreviewMultiplier(der);
+        const preCritSupport = Math.max(0, raw * supportM * echoM);
         h += dmgTipTripleRowHtml(
-          "<strong>Healing (no armor / crit)</strong>",
-          escapeHtml(formatDmgAmount(Math.max(0, hlMathRound(raw * baseM * plannerPreCritFlatDamageMultiplier(der) * echoM)))),
+          `<strong>${supportLabel} (${p.isShieldPreview ? "no mastery / armor / crit" : "no mastery / armor"})</strong>`,
+          escapeHtml(formatDmgAmount(hlMathRound(preCritSupport))),
           "="
         );
+        if (p.isHealPreview) {
+          h += dmgTipTripleRowHtml(
+            `Crit <span class="gp-muted gp-dmg-tip-row__sub">${escapeHtml(plannerCritAfterRoundTooltipDetail(der))}</span>`,
+            escapeHtml(formatDmgAmount(plannerExpectedDamageEvAfterCritRound(preCritSupport, der))),
+            "="
+          );
+        }
       }
       return h;
     }
@@ -7398,7 +7761,24 @@
     const name = escapeHtml(skillDisplayName(sk) || sid || "Skill");
     const passive = skillIconIsPassiveFrame(sk);
     const iconFrame = passive ? "gp-skill-icon--passive" : "gp-skill-icon--active";
-    const meta = escapeHtml(passive ? "Damage breakdown · Passive" : "Damage breakdown");
+    let breakdownKind = "damage";
+    if (kind === "desc") {
+      const keyForMeta = String(sp.key || "dmg").toLowerCase();
+      if (keyForMeta === "heal") breakdownKind = "heal";
+      else if (keyForMeta === "shield") breakdownKind = "shield";
+    } else if (kind === "expected") {
+      const riMeta =
+        typeof sp.row === "number" && Number.isFinite(sp.row)
+          ? Math.max(0, Math.floor(sp.row))
+          : parseInt(String(sp.row != null ? sp.row : "0"), 10) || 0;
+      const rowsMeta = combatCtx ? collectMergedDamageRows(sk, combatCtx) : [];
+      const rowMeta = rowsMeta[riMeta];
+      if (rowMeta && String(rowMeta.kindLabel || "").toLowerCase().includes("healing")) breakdownKind = "heal";
+      else if (rowMeta && String(rowMeta.kindLabel || "").toLowerCase().includes("shield")) breakdownKind = "shield";
+    }
+    const breakdownTitle =
+      breakdownKind === "heal" ? "Heal breakdown" : breakdownKind === "shield" ? "Shield breakdown" : "Damage breakdown";
+    const meta = escapeHtml(passive ? `${breakdownTitle} · Passive` : breakdownTitle);
 
     let bodyInner = "";
     if (kind === "desc") {
@@ -7407,10 +7787,15 @@
       if (!combatCtx || !combatCtx.sheetTotals || !combatCtx.derived) {
         bodyInner = `<p class="gp-muted gp-dmg-tip-empty">Equip gear and set foe / level so description damage previews can resolve.</p>`;
       } else {
-        const prevAll = collectEffectDamagePreviewsOrdered(sk, combatCtx, rank);
+        const prevAll =
+          key === "heal"
+            ? collectEffectHealPreviewsOrdered(sk, combatCtx, rank)
+            : key === "shield"
+              ? collectEffectShieldPreviewsOrdered(sk, combatCtx, rank)
+              : collectEffectDamagePreviewsOrdered(sk, combatCtx, rank);
         const prev = previewsSubsetForDescPlaceholderKey(prevAll, key);
         if (!prev.length) {
-          bodyInner = `<p class="gp-muted gp-dmg-tip-empty">No matching damage preview for <code>::${escapeHtml(
+          bodyInner = `<p class="gp-muted gp-dmg-tip-empty">No matching ${escapeHtml(breakdownKind)} preview for <code>::${escapeHtml(
             key
           )}::</code> at rank ≤${escapeHtml(String(rank))}.</p>`;
         } else {
@@ -7428,7 +7813,7 @@
         const mrows = collectMergedDamageRows(sk, combatCtx);
         const row = mrows[ri];
         if (!row || row.finalExpectedSum == null || !Number.isFinite(row.finalExpectedSum)) {
-          bodyInner = `<p class="gp-muted gp-dmg-tip-empty">No merged damage row for this line.</p>`;
+          bodyInner = `<p class="gp-muted gp-dmg-tip-empty">No merged ${escapeHtml(breakdownKind)} row for this line.</p>`;
         } else {
           const der = combatCtx.derived;
           const root = plannerDamageAffinityRootFromKindLabel(row.kindLabel);
@@ -7470,7 +7855,9 @@
           }
 
           const resultHtml = dmgTipTripleRowHtml(
-            `<strong>${escapeHtml(row.kindLabel || "Damage")}</strong> <span class="gp-muted gp-dmg-tip-row__sub">expected average</span>`,
+            `<strong>${escapeHtml(row.kindLabel || "Damage")}</strong> <span class="gp-muted gp-dmg-tip-row__sub">${
+              skillPreviewRowIsShieldOnly(row) ? "preview" : "expected average"
+            }</span>`,
             escapeHtml(fin),
             "="
           );
@@ -7564,6 +7951,12 @@
       for (const wkey of ["mainHand", "offHand", "arsenal"]) {
         const s = snap[wkey];
         if (!s || !s.item) continue;
+        const sd = SLOT_DEFS.find((x) => x.key === wkey);
+        const cl =
+          (ctxPv && Number.isFinite(ctxPv.charLevel) && ctxPv.charLevel) ||
+          (ctxEq && Number.isFinite(ctxEq.charLevel) && ctxEq.charLevel) ||
+          CHAR_LEVEL_DEFAULT;
+        if (sd && !slotSelectionIsActive(sd, s, classId, cl, snap)) continue;
         if (wkey === "arsenal") {
           const allowed = new Set(weaponSkillPickIds(s.item));
           for (const pk of ["pickSkill1", "pickSkill2"]) {
@@ -7589,9 +7982,27 @@
     for (const row of classRows) {
       const sid = row.skill;
       if (typeof sid !== "string" || CLASS_SKILLS_HIDDEN_IDS.has(sid)) continue;
+      if (mageIsConduitSkillId(sid)) continue;
+      if (priestIsPrayerSkillId(sid)) continue;
       const sk = skillById[sid];
       if (!sk) continue;
       if (damagePreviewRowsExist(sk, ctxEq) || damagePreviewRowsExist(sk, ctxPv)) ids.add(sid);
+    }
+    if (classId === "Mage") {
+      const conduits = mageSelectedConduitSkillIds();
+      for (let mi = 0; mi < conduits.length; mi++) {
+        const sid = conduits[mi];
+        const sk = skillById[sid];
+        if (sk && (damagePreviewRowsExist(sk, ctxEq) || damagePreviewRowsExist(sk, ctxPv))) ids.add(sid);
+      }
+    }
+    if (classId === "Priest") {
+      const prayers = priestSelectedPrayerSkillIds();
+      for (let pi = 0; pi < prayers.length; pi++) {
+        const sid = prayers[pi];
+        const sk = skillById[sid];
+        if (sk && (damagePreviewRowsExist(sk, ctxEq) || damagePreviewRowsExist(sk, ctxPv))) ids.add(sid);
+      }
     }
     return [...ids];
   }
@@ -7653,9 +8064,29 @@
     for (const row of classRows) {
       const sid = row.skill;
       if (typeof sid !== "string" || CLASS_SKILLS_HIDDEN_IDS.has(sid)) continue;
+      if (mageIsConduitSkillId(sid)) continue;
+      if (priestIsPrayerSkillId(sid)) continue;
       if (!idSet.has(sid) || seen.has(sid)) continue;
       seen.add(sid);
       out.push(sid);
+    }
+    if (classId === "Mage") {
+      const conduits = mageSelectedConduitSkillIds();
+      for (let mi = 0; mi < conduits.length; mi++) {
+        const sid = conduits[mi];
+        if (!idSet.has(sid) || seen.has(sid)) continue;
+        seen.add(sid);
+        out.push(sid);
+      }
+    }
+    if (classId === "Priest") {
+      const prayers = priestSelectedPrayerSkillIds();
+      for (let pi = 0; pi < prayers.length; pi++) {
+        const sid = prayers[pi];
+        if (!idSet.has(sid) || seen.has(sid)) continue;
+        seen.add(sid);
+        out.push(sid);
+      }
     }
     return out;
   }
@@ -7849,6 +8280,7 @@
           const p = computeEffectDamagePreview(e, sheetTotals, derived, combatCtx, rankForScaling);
           if (p) {
             p.scriptHostSkill = src;
+            p.previewMergeStep = st;
             out.push(p);
           }
         }
@@ -7885,6 +8317,46 @@
           const p = computeEffectHealPreview(e, sheetTotals, derived, combatCtx, rankForScaling);
           if (p) {
             p.scriptHostSkill = src;
+            p.previewMergeStep = st;
+            out.push(p);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Ordered shield previews (**`effect` 2** + **`scaling[]`**) — mirrors heal/damage preview ordering. */
+  function collectEffectShieldPreviewsOrdered(sk, combatCtx, damageStepMaxRank, masteryEntryId) {
+    const out = [];
+    if (!sk || !combatCtx) return out;
+    const sheetTotals = combatCtx.sheetTotals;
+    const derived = combatCtx.derived;
+    if (!sheetTotals || !derived) return out;
+    const cap =
+      damageStepMaxRank != null && Number.isFinite(damageStepMaxRank)
+        ? Math.max(1, Math.floor(damageStepMaxRank))
+        : null;
+    const sources = skillAggregatesReferencedDamageRows(sk)
+      ? [sk].concat(referencedSkillsForMergedDamage(sk))
+      : [sk];
+    for (let ci = 0; ci < sources.length; ci++) {
+      const src = sources[ci];
+      if (!src || !src.steps) continue;
+      const rankForScaling = cap != null ? cap : skillDamageScalingCondsRank(src);
+      for (let si = 0; si < src.steps.length; si++) {
+        const st = src.steps[si];
+        const effs = st.effects || [];
+        for (let ei = 0; ei < effs.length; ei++) {
+          const e = effs[ei];
+          if (masteryEntryId != null && masteryEntryId !== "") {
+            if (!skillStepEffectMatchesMasteryId(st, e, masteryEntryId)) continue;
+          } else if (!skillHostStepEffectMatchesMastery(sk, st, e)) continue;
+          if (cap != null && skillEffectDamageMinRank(st, e) > cap) continue;
+          const p = computeEffectShieldPreview(e, sheetTotals, derived, combatCtx, rankForScaling);
+          if (p) {
+            p.scriptHostSkill = src;
+            p.previewMergeStep = st;
             out.push(p);
           }
         }
@@ -7942,7 +8414,7 @@
     }
 
     if (wantPct) {
-      if (/^(val|val1|val2|val3)$/.test(key)) {
+      if (/^val\d*$/.test(key)) {
         const ax = skillAffixEntryForPlaceholderKey(ts, key, affixRank, masteryEntryId);
         if (ax) return formatAffixValPercentForSkillDesc(ax, ts, affixRank);
       }
@@ -8027,8 +8499,8 @@
     }
 
     if (key === "dmg2") {
-      if (!previews || !previews[1]) return null;
-      const p1 = previews[1];
+      const p1 = descNumberedDamagePreview(previews, 1);
+      if (!p1) return null;
       if (combatCtx && combatCtx.sheetTotals && combatCtx.derived) {
         const ex = plannerSkillDescPreCritExactFromPreview(p1, combatCtx, ts);
         if (ex != null) {
@@ -8041,8 +8513,8 @@
     }
 
     if (key === "dmg3") {
-      if (!previews || !previews[2]) return null;
-      const p2 = previews[2];
+      const p2 = descNumberedDamagePreview(previews, 2);
+      if (!p2) return null;
       if (combatCtx && combatCtx.sheetTotals && combatCtx.derived) {
         const ex = plannerSkillDescPreCritExactFromPreview(p2, combatCtx, ts);
         if (ex != null) {
@@ -8060,25 +8532,38 @@
       const heals = collectEffectHealPreviewsOrdered(ts, combatCtx, affixRank);
       if (!heals.length) return null;
       const derived = combatCtx.derived;
-      const preCritFlat = plannerPreCritFlatDamageMultiplier(derived);
+      const supportM = plannerHealPreviewMultiplier(derived);
       const echoM = mageEchoingLifeHealMultiplier(hostSk);
       let sum = 0;
       for (let i = 0; i < heals.length; i++) {
         const h = heals[i];
         const rawHit = typeof h.raw === "number" && Number.isFinite(h.raw) ? h.raw : 0;
-        const baseM = typeof h.mult === "number" && Number.isFinite(h.mult) ? h.mult : 1;
-        sum += rawHit * baseM * preCritFlat * echoM;
+        sum += rawHit * supportM * echoM;
       }
       return formatSkillDescDamagePreCritRange(sum);
     }
 
     if (key === "shield") {
+      if (wantPct) return null;
+      if (combatCtx && combatCtx.sheetTotals && combatCtx.derived) {
+        const shields = collectEffectShieldPreviewsOrdered(ts, combatCtx, affixRank, masteryEntryId);
+        if (shields.length) {
+          const supportM = plannerShieldPreviewMultiplier(combatCtx.derived);
+          let sum = 0;
+          for (let i = 0; i < shields.length; i++) {
+            const h = shields[i];
+            const rawHit = typeof h.raw === "number" && Number.isFinite(h.raw) ? h.raw : 0;
+            sum += rawHit * supportM;
+          }
+          return formatSkillDescDamagePreCritRange(sum);
+        }
+      }
       const v = skillVarLookupLoose(ts, "shield", varsBag);
       return v != null ? String(Math.round(v * 100) / 100) : null;
     }
 
     let v = null;
-    if (/^(val|val1|val2|val3)$/.test(key)) {
+    if (/^val\d*$/.test(key)) {
       const ax = skillAffixEntryForPlaceholderKey(ts, key, affixRank, masteryEntryId);
       if (ax) v = adjustPairedTierLowFlatPercentMagnitudeForDesc(ax, ts, affixRank);
     }
@@ -8188,21 +8673,27 @@
 
     textCol.querySelectorAll(".gp-char-skill__computed-dmg, .gp-char-skill__final-dmg").forEach((el) => el.remove());
     textCol.querySelectorAll(".gp-char-skill__surge-row").forEach((el) => el.remove());
+    textCol.querySelectorAll(".gp-char-skill__urge-row").forEach((el) => el.remove());
+    textCol.querySelectorAll(".gp-char-skill__stack-row").forEach((el) => el.remove());
     appendSurgeViolenceFinalComboRow(textCol, sid);
     appendComputedSkillDamageToCard(textCol, sk, ctxForSkill);
     if (skillShowsGlobalBuffCornerToggle(sk, sid, { weaponSlotKey: weaponSlotKey })) {
       syncGlobalBuffCornerToggleUi(card, sid);
     }
-    syncStatusBuffStackRowsInTextCol(textCol);
+    const hostStatusBuffs = previewableStatusBuffsForHostSkill(sk);
+    if (hostStatusBuffs.length) {
+      for (let hsi = 0; hsi < hostStatusBuffs.length; hsi++) {
+        appendStatusBuffStackRowsToSkillCard(textCol, hostStatusBuffs[hsi], sk);
+      }
+    } else if (skillIsPreviewableStackingStatusBuff(sk)) {
+      appendStatusBuffStackRowsToSkillCard(textCol, sk, sk);
+    }
     if (sid === FINISHER_SKILL_ID) {
       /** Rebuild — **max CP** changes with **Rogue_Finisher_M2** (5 → 6); syncing in place left the wrong number of buttons. */
       textCol.querySelectorAll(".gp-char-skill__combo-row").forEach((el) => el.remove());
       appendFinisherComboPointRow(textCol);
     }
-    if (sid === URGE_TO_KILL_HOST_ID) {
-      const inp = textCol.querySelector(".gp-char-skill__urge-input");
-      if (inp) inp.value = String(previewUrgeFinisherStreakCount());
-    }
+    if (sid === URGE_TO_KILL_HOST_ID) appendUrgeFinisherStreakRow(textCol, sk);
     wireCharSkillCardDamageTooltips(card, sk, sid, ctxForSkill);
   }
 
@@ -8587,20 +9078,37 @@
     }
   }
 
-  function collectCombatPanelSkillHostIds(classId, selectionSnapshot) {
+  function collectCombatPanelSkillHostIds(classId, selectionSnapshot, charLevel) {
     const hosts = new Set();
     const cls = unitSheet && unitSheet.lines && unitSheet.lines.find((r) => r.id === classId);
     const classRows = (cls && cls.skills) || [];
     for (let i = 0; i < classRows.length; i++) {
       const sid = classRows[i] && classRows[i].skill;
       if (typeof sid !== "string" || CLASS_SKILLS_HIDDEN_IDS.has(sid)) continue;
+      if (mageIsConduitSkillId(sid)) continue;
+      if (priestIsPrayerSkillId(sid)) continue;
       hosts.add(sid);
     }
+    if (classId === "Mage") {
+      const conduits = mageSelectedConduitSkillIds();
+      for (let mi = 0; mi < conduits.length; mi++) hosts.add(conduits[mi]);
+    }
+    if (classId === "Priest") {
+      const prayers = priestSelectedPrayerSkillIds();
+      for (let pi = 0; pi < prayers.length; pi++) hosts.add(prayers[pi]);
+    }
     const slotMap = selectionSnapshot || selection;
+    const cl =
+      Number.isFinite(charLevel)
+        ? charLevel
+        : plannerSkillCombatCtx && Number.isFinite(plannerSkillCombatCtx.charLevel)
+          ? plannerSkillCombatCtx.charLevel
+          : CHAR_LEVEL_DEFAULT;
     for (let wi = 0; wi < SLOT_DEFS.length; wi++) {
       const sd = SLOT_DEFS[wi];
       const sel = slotMap[sd.key];
       if (!sel || !sel.item) continue;
+      if (!slotSelectionIsActive(sd, sel, classId, cl, slotMap)) continue;
       const ench = sel.enchantId ? enchantItemById(sel.enchantId) : null;
       if (ench && Array.isArray(ench.skills)) {
         for (let ei = 0; ei < ench.skills.length; ei++) {
@@ -8625,9 +9133,9 @@
   }
 
   /** Max **`skillDamageScalingCondsRank`** among hosts that apply this **`props.status.ref`** (for gated **`affixes[].conds`**). */
-  function statusGrantorMaxRankByStatusId(classId, selectionSnapshot) {
+  function statusGrantorMaxRankByStatusId(classId, selectionSnapshot, charLevel) {
     const map = new Map();
-    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot);
+    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot, charLevel);
     for (const hid of hostIds) {
       if (!passiveScriptGlobalMultApplies(hid)) continue;
       const h = skillById[hid];
@@ -8646,6 +9154,7 @@
   function skillStatusMaxStacksFromProps(sk) {
     const mx = sk && sk.props && sk.props.status && sk.props.status.maxStacks;
     if (typeof mx !== "number" || !Number.isFinite(mx) || mx < 1) return 0;
+    if (sk && sk.id === CRUSADER_STATUS_ID) return Math.floor(mx);
     return Math.min(99, Math.floor(mx));
   }
 
@@ -8658,6 +9167,7 @@
       const raw = bag[sid];
       if (typeof raw === "number" && Number.isFinite(raw)) return clamp(Math.floor(raw), 0, maxS);
     }
+    if (sid === CRUSADER_STATUS_ID) return 0;
     return maxS;
   }
 
@@ -8669,11 +9179,29 @@
     if (!sk || !Array.isArray(sk.affixes)) return false;
     for (let i = 0; i < sk.affixes.length; i++) {
       const ax = sk.affixes[i];
-      if (!ax || ax.mod && ax.mod.dynVal) continue;
+      if (!ax || (ax.mod && ax.mod.dynVal && !statusPreviewUsesDynamicBaseAffix(sk, ax))) continue;
       const ref = typeof ax.ref === "string" ? ax.ref : "";
       if (ref === "TAttribute_Flat" || ref === "TAttribute_ARatio") return true;
     }
     return false;
+  }
+
+  function statusPreviewControlRequiredMasteryId(statusSk) {
+    if (!statusSk || !Array.isArray(statusSk.affixes)) return null;
+    let required = null;
+    let sawPreviewable = false;
+    for (let i = 0; i < statusSk.affixes.length; i++) {
+      const ax = statusSk.affixes[i];
+      if (!ax || (ax.mod && ax.mod.dynVal && !statusPreviewUsesDynamicBaseAffix(statusSk, ax))) continue;
+      const ref = typeof ax.ref === "string" ? ax.ref : "";
+      if (ref !== "TAttribute_Flat" && ref !== "TAttribute_ARatio") continue;
+      sawPreviewable = true;
+      const mid = ax.conds && ax.conds.mastery != null && ax.conds.mastery !== "" ? String(ax.conds.mastery) : "";
+      if (!mid) return null;
+      if (required == null) required = mid;
+      else if (required !== mid) return null;
+    }
+    return sawPreviewable ? required : null;
   }
 
   /** Non-stacking status with static **`TAttribute_Flat`** / **`TAttribute_ARatio`** rows. */
@@ -8714,7 +9242,7 @@
     if (!statusSk || !attrId) return 0;
     const r = grantorRank != null && Number.isFinite(grantorRank) ? Math.max(1, Math.floor(grantorRank)) : 1;
     const fromAffix = talentAffixFlatSumAtRank(statusSk, attrId, r);
-    if (fromAffix > 0) return fromAffix;
+    if (fromAffix > 0) return statusPreviewFlatMultiplier(statusSk) * fromAffix;
     if (attrId === "PhysicalMastery" || attrId === "MagicMastery") {
       const vars = mergedVarsForSkillDesc(statusSk, r);
       const v = vars && vars.var1;
@@ -8723,10 +9251,29 @@
     return 0;
   }
 
+  function crusaderPreviewStackEffectMultiplier() {
+    const host = skillById[CRUSADER_HOST_ID];
+    if (!host || selectedClassSkillMasteryId(CRUSADER_HOST_ID, host) !== CRUSADER_M2_MASTERY_ID) return 1;
+    const st = skillById[CRUSADER_STATUS_ID];
+    const vars = st ? mergedVarsForSkillDesc(st, 1) : {};
+    const perStack =
+      vars && typeof vars.var1 === "number" && Number.isFinite(vars.var1) ? vars.var1 : 0.01;
+    return 1 + Math.max(0, statusPreviewStackCount(st)) * perStack;
+  }
+
+  function statusPreviewFlatMultiplier(statusSk) {
+    return statusSk && statusSk.id === CRUSADER_STATUS_ID ? crusaderPreviewStackEffectMultiplier() : 1;
+  }
+
+  function statusPreviewAffixVal(statusSk, ax) {
+    const base = ax && typeof ax.val === "number" && Number.isFinite(ax.val) ? ax.val : 0;
+    return statusSk && statusSk.id === CRUSADER_STATUS_ID ? base * crusaderPreviewStackEffectMultiplier() : base;
+  }
+
   /** Flat **`TAttribute_*`** totals from equipped-host-applied statuses (scaled by preview stack count). */
-  function sumPreviewStatusBuffFlats(classId, selectionSnapshot) {
+  function sumPreviewStatusBuffFlats(classId, selectionSnapshot, charLevel) {
     const totals = {};
-    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot);
+    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot, charLevel);
     for (const hid of hostIds) {
       if (!passiveScriptGlobalMultApplies(hid)) continue;
       const host = skillById[hid];
@@ -8760,9 +9307,9 @@
    * Excludes foe-only debuff rows (e.g. Knives Tempest **Shred**), which would wrongly reduce the player’s armor on the summary.
    * Values are ratios (0.3 → +30% armor); applied in **`renderSummary`** as **`(1 + Σ)`** on base armor.
    */
-  function sumPreviewStatusBuffARatios(classId, selectionSnapshot) {
+  function sumPreviewStatusBuffARatios(classId, selectionSnapshot, charLevel) {
     const totals = {};
-    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot);
+    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot, charLevel);
     for (const hid of hostIds) {
       if (!passiveScriptGlobalMultApplies(hid)) continue;
       const host = skillById[hid];
@@ -8789,12 +9336,12 @@
         for (let ai = 0; ai < st.affixes.length; ai++) {
           const ax = st.affixes[ai];
           if (!ax || ax.ref !== "TAttribute_ARatio") continue;
-          if (ax.mod && ax.mod.dynVal) continue;
+          if (ax.mod && ax.mod.dynVal && !statusPreviewUsesDynamicBaseAffix(st, ax)) continue;
           const attr = ax.target && ax.target.attribute;
           if (!attr || typeof ax.val !== "number") continue;
           if (!talentAffixRowMatchesRank(ax.conds, rank)) continue;
           if (!skillAffixRowMatchesMasteryGate(ax, hostMid)) continue;
-          totals[attr] = (totals[attr] || 0) + ax.val * stacks;
+          totals[attr] = (totals[attr] || 0) + statusPreviewAffixVal(st, ax) * stacks;
         }
       }
     }
@@ -8811,8 +9358,8 @@
       combined[k] = (combined[k] || 0) + talStatic[k];
     }
 
-    const stFlat = sumPreviewStatusBuffFlats(classId, selectionSnapshot);
-    const stRatio = sumPreviewStatusBuffARatios(classId, selectionSnapshot);
+    const stFlat = sumPreviewStatusBuffFlats(classId, selectionSnapshot, charLevel);
+    const stRatio = sumPreviewStatusBuffARatios(classId, selectionSnapshot, charLevel);
     const magicForDiscipline =
       (baseStats.MagicMastery || 0) + (combined.MagicMastery || 0) + (stFlat.MagicMastery || 0);
     const dyn = sumTalentDynamicMasteryFlats(classId, magicForDiscipline);
@@ -8826,7 +9373,7 @@
       const ratio = stRatio[attr];
       if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio === 0) continue;
       const baseVal = (baseStats[attr] || 0) + (out[attr] || 0);
-      out[attr] = baseVal * (1 + ratio);
+      out[attr] = (out[attr] || 0) + baseVal * ratio;
     }
     for (const k of Object.keys(dyn)) {
       out[k] = (out[k] || 0) + dyn[k];
@@ -8925,13 +9472,25 @@
     for (let i = 0; i < sk.affixes.length; i++) {
       const ax = sk.affixes[i];
       if (!ax || ax.ref !== "TAttribute_Flat") continue;
-      if (ax.mod && ax.mod.dynVal) continue;
+      if (ax.mod && ax.mod.dynVal && !statusPreviewUsesDynamicBaseAffix(sk, ax)) continue;
       const attr = ax.target && ax.target.attribute;
       if (!attr || seen.has(attr)) continue;
       seen.add(attr);
       order.push(attr);
     }
     return order;
+  }
+
+  function statusPreviewUsesDynamicBaseAffix(sk, ax) {
+    if (!sk || sk.id !== CRUSADER_STATUS_ID || !ax) return false;
+    const attr = ax.target && ax.target.attribute;
+    return (
+      attr === "CritChance" ||
+      attr === "CooldownReduction" ||
+      attr === "DamageModifier" ||
+      attr === "HealGivenMultiplier" ||
+      attr === "ShieldPowerMultiplier"
+    );
   }
 
   /** Sum of presentation flats for **`attrId`** from **`sk.affixes`** when **`conds`** match **`rank`**. */
@@ -8941,7 +9500,7 @@
     for (let i = 0; i < sk.affixes.length; i++) {
       const ax = sk.affixes[i];
       if (!ax || ax.ref !== "TAttribute_Flat") continue;
-      if (ax.mod && ax.mod.dynVal) continue;
+      if (ax.mod && ax.mod.dynVal && !statusPreviewUsesDynamicBaseAffix(sk, ax)) continue;
       const a = ax.target && ax.target.attribute;
       if (a !== attrId || typeof ax.val !== "number") continue;
       if (!talentAffixRowMatchesRank(ax.conds, rank)) continue;
@@ -10015,6 +10574,7 @@
     const totals = {};
     for (const slot of SLOT_DEFS) {
       const sel = slotMap[slot.key];
+      if (!slotSelectionIsActive(slot, sel, viewerClassId, charLevel, slotMap)) continue;
       addGearAffixesFromSlotInto(totals, charLevel, viewerClassId, slot, sel);
     }
     return totals;
@@ -10491,6 +11051,7 @@
       const slot = SLOT_DEFS[si];
       const sel = slotMap[slot.key];
       if (!sel || !sel.item) continue;
+      if (!slotSelectionIsActive(slot, sel, classId, charLevel, slotMap)) continue;
       const part = {};
       addGearAffixesFromSlotInto(part, charLevel, classId, slot, sel);
       const v = part[attrId];
@@ -10532,9 +11093,9 @@
     return out;
   }
 
-  function collectSummaryStatusBuffFlatLinesForAttr(classId, selectionSnapshot, attrId) {
+  function collectSummaryStatusBuffFlatLinesForAttr(classId, selectionSnapshot, attrId, charLevel) {
     const out = [];
-    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot);
+    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot, charLevel);
     for (const hid of hostIds) {
       if (!passiveScriptGlobalMultApplies(hid)) continue;
       const host = skillById[hid];
@@ -10565,9 +11126,9 @@
   }
 
   /** Each entry: **`value`** = additive % points (**`ratio × 100`**). */
-  function collectSummaryStatusARatioLinesForAttr(classId, selectionSnapshot, attrId) {
+  function collectSummaryStatusARatioLinesForAttr(classId, selectionSnapshot, attrId, charLevel) {
     const out = [];
-    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot);
+    const hostIds = collectCombatPanelSkillHostIds(classId, selectionSnapshot, charLevel);
     for (const hid of hostIds) {
       if (!passiveScriptGlobalMultApplies(hid)) continue;
       const host = skillById[hid];
@@ -10594,12 +11155,12 @@
         for (let ai = 0; ai < st.affixes.length; ai++) {
           const ax = st.affixes[ai];
           if (!ax || ax.ref !== "TAttribute_ARatio") continue;
-          if (ax.mod && ax.mod.dynVal) continue;
+          if (ax.mod && ax.mod.dynVal && !statusPreviewUsesDynamicBaseAffix(st, ax)) continue;
           const at = ax.target && ax.target.attribute;
           if (at !== attrId || typeof ax.val !== "number") continue;
           if (!talentAffixRowMatchesRank(ax.conds, rank)) continue;
           if (!skillAffixRowMatchesMasteryGate(ax, hostMid)) continue;
-          const pctPts = ax.val * stacks * 100;
+          const pctPts = statusPreviewAffixVal(st, ax) * stacks * 100;
           if (Math.abs(pctPts) < 1e-12) continue;
           out.push({
             label: `Buff %: ${skillDisplayName(st)}`,
@@ -10663,7 +11224,7 @@
     const tal = sumTalentAffixFlats(classId, { skipDynAffixes: true });
     const comb = { ...gear };
     for (const k of Object.keys(tal)) comb[k] = (comb[k] || 0) + tal[k];
-    const stF = sumPreviewStatusBuffFlats(classId, selectionSnapshot);
+    const stF = sumPreviewStatusBuffFlats(classId, selectionSnapshot, charLevel);
     return (
       (baseFull.MagicMastery || 0) +
       (comb.MagicMastery || 0) +
@@ -10745,7 +11306,7 @@
         .concat(collectSummaryClassSheetLines(classIdTip, charLevel, attrId))
         .concat(collectSummaryGearSlotLinesForAttr(charLevel, classIdTip, snapTip, attrId))
         .concat(collectSummaryTalentFlatLinesForAttr(classIdTip, attrId))
-        .concat(collectSummaryStatusBuffFlatLinesForAttr(classIdTip, snapTip, attrId))
+        .concat(collectSummaryStatusBuffFlatLinesForAttr(classIdTip, snapTip, attrId, charLevel))
         .concat(collectSummaryConsumableLinesForAttr(attrId));
     }
 
@@ -10756,9 +11317,9 @@
       const g = gearFlat[k] || 0;
       const t = b + g;
       let body = appendNamedSourceRows("", rowsForAttr(k), k);
-      const ar = collectSummaryStatusARatioLinesForAttr(classIdTip, snapTip, k);
+      const ar = collectSummaryStatusARatioLinesForAttr(classIdTip, snapTip, k, charLevel);
       if (ar.length) body = appendNamedSourceRows(body, ar, k);
-      const stR = sumPreviewStatusBuffARatios(classIdTip, snapTip);
+      const stR = sumPreviewStatusBuffARatios(classIdTip, snapTip, charLevel);
       const rr = stR[k];
       if (typeof rr === "number" && Number.isFinite(rr) && Math.abs(rr) > 1e-12) {
         body += tipRow(
@@ -11122,7 +11683,7 @@
     const vit = (baseStats.Vitality || 0) + (gearFlat.Vitality || 0);
     const fai = (baseStats.Faith || 0) + (gearFlat.Faith || 0);
     const clsId = plannerSelectedClassId();
-    const armorRatio = sumPreviewStatusBuffARatios(clsId, selection);
+    const armorRatio = sumPreviewStatusBuffARatios(clsId, selection, charLevel);
     const armorBase = (baseStats.Armor || 0) + (gearFlat.Armor || 0);
     const armorMult = 1 + (armorRatio.Armor || 0);
     const armorTotal = armorBase * armorMult;
@@ -11524,9 +12085,11 @@
     if (!sd) return;
 
     const classId = typeof getClassIdFn === "function" ? getClassIdFn() : "";
+    const charLevel = typeof getCharLevelFn === "function" ? getCharLevelFn() : CHAR_LEVEL_DEFAULT;
     let slotItems = itemsForSlot(sd, classId);
     const cur = selection[slotKey];
     const highlightId = cur && cur.item ? cur.item.id : null;
+    const arsenalLocked = sd.weaponRole === "arsenal" && charLevel < ARSENAL_UNLOCK_LEVEL;
 
     const rarities = [...new Set(slotItems.map((x) => x.rarity || "Common"))];
     rarities.sort(
@@ -11549,7 +12112,7 @@
     /**
      * **`modalFreeIlvl`** — level slider for non-craft previews; unchanged when browsing craft rows (craft uses **`item.level`** per row).
      */
-    let modalFreeIlvl = clamp(getCharLevelFn(), 1, GEAR_LEVEL_MAX);
+    let modalFreeIlvl = clamp(charLevel, 1, GEAR_LEVEL_MAX);
     if (cur && cur.ilvl != null && !(cur.item && itemFactionIsCraft(cur.item))) {
       modalFreeIlvl = clamp(cur.ilvl, 1, GEAR_LEVEL_MAX);
     }
@@ -11619,7 +12182,9 @@
         <div class="gp-modal__footer">
           <button type="button" class="gp-btn--danger" data-action="clear">Clear slot</button>
           <button type="button" data-action="cancel">Cancel</button>
-          <button type="button" class="gp-btn--primary" data-action="equip" ${modalHighlightId ? "" : "disabled"}>Equip selected</button>
+          <button type="button" class="gp-btn--primary" data-action="equip" ${
+            modalHighlightId && !arsenalLocked ? "" : "disabled"
+          }>Equip selected</button>
         </div>
       </div>
     `;
@@ -12361,6 +12926,7 @@
 
     function equipSelected() {
       if (!modalHighlightId) return;
+      if (arsenalLocked) return;
       const it = itemLines.find((x) => x.id === modalHighlightId);
       if (!it) return;
       readDraftFromSlotOpts();
@@ -12463,7 +13029,14 @@
   function renderSlotCard(sd, parentEl, getCharLevelFn, handlers, getClassIdFn) {
     const sel = selection[sd.key];
     const it = sel.item;
-    let ilvl = sel.ilvl != null ? sel.ilvl : getCharLevelFn();
+    const charLevel = typeof getCharLevelFn === "function" ? getCharLevelFn() : CHAR_LEVEL_DEFAULT;
+    const classId = typeof getClassIdFn === "function" ? getClassIdFn() : "";
+    const inactiveReason = slotInactiveReason(sd, sel, classId, charLevel, selection);
+    const lockedEmptyReason =
+      !it && sd.weaponRole === "arsenal" && charLevel < ARSENAL_UNLOCK_LEVEL
+        ? `Unlocks at level ${ARSENAL_UNLOCK_LEVEL}`
+        : "";
+    let ilvl = sel.ilvl != null ? sel.ilvl : charLevel;
     if (it && itemFactionIsCraft(it)) {
       const fx = defaultGearPlannerTierForItem(it);
       if (fx != null) ilvl = fx;
@@ -12474,8 +13047,16 @@
 
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "slot-card" + (it ? "" : " slot-card--empty");
+    btn.className =
+      "slot-card" +
+      (it ? "" : " slot-card--empty") +
+      (inactiveReason || lockedEmptyReason ? " slot-card--inactive" : "") +
+      (lockedEmptyReason ? " slot-card--locked" : "");
     btn.dataset.slotKey = sd.key;
+    if (inactiveReason || lockedEmptyReason) {
+      btn.setAttribute("aria-disabled", "true");
+      btn.title = inactiveReason || lockedEmptyReason;
+    }
 
     const effRarity = it ? effectiveItemRarity(sel) : null;
 
@@ -12484,6 +13065,10 @@
       ? `<div class="slot-card__drops">${escapeHtml(craftSub)}</div>`
       : "";
 
+    const stateRow =
+      inactiveReason || lockedEmptyReason
+        ? `<div class="slot-card__inactive-reason">${escapeHtml(inactiveReason || lockedEmptyReason)}</div>`
+        : "";
     const metaName = it
       ? `<div class="slot-card__name ${rarityTextClass(effRarity || it.rarity)}">${escapeHtml(itemDisplayName(it))}</div>
          ${craftRow}
@@ -12491,8 +13076,11 @@
              itemFactionIsCraft(it)
                ? ` <span class="slot-card__level-fixed" title="Craft items use a fixed required level">(fixed)</span>`
                : ""
-           }</div>`
-      : `<div class="slot-card__hint">Click to choose an item…</div>`;
+           }</div>
+         ${stateRow}`
+      : `<div class="slot-card__hint">${escapeHtml(
+          lockedEmptyReason || "Click to choose an item…"
+        )}</div>`;
 
     btn.innerHTML = `
       <div class="slot-card__label">${escapeHtml(sd.label)}</div>
@@ -12541,7 +13129,10 @@
       btn.addEventListener("blur", scheduleHideGearPlannerTooltip);
     }
 
-    btn.addEventListener("click", () => handlers.openItemModal(sd.key));
+    btn.addEventListener("click", () => {
+      if (lockedEmptyReason) return;
+      handlers.openItemModal(sd.key);
+    });
 
     wrap.appendChild(btn);
 
@@ -12569,7 +13160,11 @@
     strip.setAttribute("role", "group");
     strip.setAttribute("aria-label", "Main-hand weapon skills");
     const mh = selection.mainHand && selection.mainHand.item;
-    if (mh) {
+    const curClassId = typeof getClassIdFn === "function" ? getClassIdFn() : "";
+    const curLevel = typeof getCharLevelFn === "function" ? getCharLevelFn() : CHAR_LEVEL_DEFAULT;
+    const mainActive =
+      mh && mainSd && slotSelectionIsActive(mainSd, selection.mainHand, curClassId, curLevel, selection);
+    if (mainActive) {
       const layout = weaponSkillStripLayout(mh);
       for (let i = 0; i < layout.length; i++) {
         const sid = layout[i].id;
@@ -12626,7 +13221,7 @@
     const offWrap = document.createElement("div");
     offWrap.className = "slot-weapon-off";
     const mainIt = selection.mainHand && selection.mainHand.item;
-    if (mainIt && weaponOccupiesBothHands(mainIt.type)) {
+    if (mainActive && mainIt && weaponOccupiesBothHands(mainIt.type)) {
       const blocked = document.createElement("div");
       blocked.className = "slot-card slot-card--blocked";
       blocked.innerHTML = `
@@ -12649,7 +13244,9 @@
     arsenalRow.appendChild(arsSlots);
 
     const arsWep = selection.arsenal && selection.arsenal.item;
-    if (arsWep) {
+    const arsenalActive =
+      arsWep && arsSd && slotSelectionIsActive(arsSd, selection.arsenal, curClassId, curLevel, selection);
+    if (arsenalActive) {
       const pickIds = weaponSkillPickIds(arsWep);
       const picksWrap = document.createElement("div");
       picksWrap.className = "slot-grid__arsenal-picks";
@@ -12765,6 +13362,11 @@
       slotsRow.appendChild(renderArsenalPickSlot(2));
       picksWrap.appendChild(slotsRow);
       arsenalRow.appendChild(picksWrap);
+    } else if (curLevel < ARSENAL_UNLOCK_LEVEL) {
+      const locked = document.createElement("div");
+      locked.className = "slot-grid__arsenal-locked";
+      locked.textContent = `Arsenal unlocks at level ${ARSENAL_UNLOCK_LEVEL}. Equipped arsenal weapons are disabled until then.`;
+      arsenalRow.appendChild(locked);
     }
 
     wrap.appendChild(mainBlock);
@@ -12782,6 +13384,8 @@
       const st = skillById[statusId];
       if (!st) return;
       const cur = statusPreviewStackCount(st);
+      const inp = stackRow.querySelector(".gp-char-skill__status-stack-input");
+      if (inp) inp.value = String(cur);
       stackRow.querySelectorAll(".gp-char-skill__rank-btn").forEach((sb) => {
         const sv = parseInt(sb.textContent, 10);
         if (!Number.isFinite(sv)) return;
@@ -12828,8 +13432,9 @@
     else textCol.appendChild(row);
   }
 
-  function appendUrgeFinisherStreakRow(textCol) {
+  function appendUrgeFinisherStreakRow(textCol, sk) {
     if (!textCol) return;
+    if (!sk || selectedClassSkillMasteryId(URGE_TO_KILL_HOST_ID, sk) !== URGE_TO_KILL_M1_MASTERY_ID) return;
     const row = document.createElement("div");
     row.className = "gp-char-skill__rank-row gp-char-skill__urge-row";
     row.setAttribute("role", "group");
@@ -12885,10 +13490,15 @@
     textCol.appendChild(row);
   }
 
-  function appendStatusBuffStackRowsToSkillCard(textCol, statusSk) {
+  function appendStatusBuffStackRowsToSkillCard(textCol, statusSk, hostSk) {
     if (!textCol || !statusSk || !statusSk.id) return;
     if (!skillIsPreviewableStackingStatusBuff(statusSk)) return;
     const statusId = statusSk.id;
+    const requiredMid = statusPreviewControlRequiredMasteryId(statusSk);
+    if (requiredMid) {
+      const host = hostSk || statusSk;
+      if (!host || selectedClassSkillMasteryId(host.id, host) !== requiredMid) return;
+    }
     const maxS = skillStatusMaxStacksFromProps(statusSk);
     const cur = statusPreviewStackCount(statusSk);
     const stackRow = document.createElement("div");
@@ -12900,6 +13510,33 @@
     stackLab.className = "gp-char-skill__rank-lab";
     stackLab.textContent = "Buff stacks";
     stackRow.appendChild(stackLab);
+    if (statusId === CRUSADER_STATUS_ID) {
+      const host = skillById[CRUSADER_HOST_ID];
+      if (!host || selectedClassSkillMasteryId(CRUSADER_HOST_ID, host) !== CRUSADER_M2_MASTERY_ID) return;
+      stackLab.textContent = "Prayers judged";
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.min = "0";
+      inp.max = String(maxS);
+      inp.step = "1";
+      inp.className = "gp-char-skill__urge-input gp-char-skill__status-stack-input";
+      inp.value = String(cur);
+      inp.title = "Righteousness: each judged Prayer increases Crusader's buff effects by 1%.";
+      inp.addEventListener("change", () => {
+        const n = parseInt(inp.value, 10);
+        const next = Number.isFinite(n) && n > 0 ? clamp(Math.floor(n), 0, maxS) : 0;
+        if (!plannerDamagePreviewSettings.previewStatusStacksBySkillId || typeof plannerDamagePreviewSettings.previewStatusStacksBySkillId !== "object") {
+          plannerDamagePreviewSettings.previewStatusStacksBySkillId = {};
+        }
+        if (next > 0) plannerDamagePreviewSettings.previewStatusStacksBySkillId[statusId] = next;
+        else delete plannerDamagePreviewSettings.previewStatusStacksBySkillId[statusId];
+        inp.value = String(next);
+        if (typeof plannerRecomputePreviewHook === "function") plannerRecomputePreviewHook();
+      });
+      stackRow.appendChild(inp);
+      textCol.appendChild(stackRow);
+      return;
+    }
     for (let sv = 0; sv <= maxS; sv++) {
       const sb = document.createElement("button");
       sb.type = "button";
@@ -13134,12 +13771,12 @@
       const hostStatusBuffs = previewableStatusBuffsForHostSkill(sk);
       if (hostStatusBuffs.length) {
         for (let hsi = 0; hsi < hostStatusBuffs.length; hsi++) {
-          appendStatusBuffStackRowsToSkillCard(textCol, hostStatusBuffs[hsi]);
+          appendStatusBuffStackRowsToSkillCard(textCol, hostStatusBuffs[hsi], sk);
         }
       } else if (skillIsPreviewableStackingStatusBuff(sk)) {
-        appendStatusBuffStackRowsToSkillCard(textCol, sk);
+        appendStatusBuffStackRowsToSkillCard(textCol, sk, sk);
       }
-      if (sid === URGE_TO_KILL_HOST_ID) appendUrgeFinisherStreakRow(textCol);
+      if (sid === URGE_TO_KILL_HOST_ID) appendUrgeFinisherStreakRow(textCol, sk);
       appendSurgeViolenceFinalComboRow(textCol, sid);
     }
     appendComputedSkillDamageToCard(textCol, sk, ctxForSkill);
@@ -13153,8 +13790,150 @@
     container.appendChild(card);
   }
 
+  function renderMageConduitsPanel(container, combatCtx) {
+    const charLevel = combatCtx && Number.isFinite(combatCtx.charLevel) ? combatCtx.charLevel : CHAR_LEVEL_DEFAULT;
+    sanitizeMageConduitSelection(charLevel);
+    const available = mageAvailableConduitSkillIds();
+    const selected = mageSelectedConduitSkillIds(charLevel);
+    const selectedSet = new Set(selected);
+    const slots = mageConduitSlotCount(charLevel);
+
+    const sec = document.createElement("section");
+    sec.className = "gp-skills-category gp-mage-conduits";
+    sec.innerHTML = `<h3 class="gp-skills-category__title">Conduits</h3>
+      <p class="gp-skills-category__sub">Choose ${slots} conduit${slots === 1 ? "" : "s"} to equip. Only selected conduits affect sheet totals and damage previews.</p>`;
+
+    const picker = document.createElement("div");
+    picker.className = "gp-mage-conduits__picker";
+    picker.setAttribute("role", "group");
+    picker.setAttribute("aria-label", "Mage conduits");
+    for (let i = 0; i < available.length; i++) {
+      const sid = available[i];
+      const sk = skillById[sid];
+      if (!sk) continue;
+      const on = selectedSet.has(sid);
+      const full = !on && selected.length >= slots;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "gp-mage-conduit-pick";
+      if (on) btn.classList.add("gp-mage-conduit-pick--active");
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.disabled = full;
+      btn.title = full
+        ? `You can equip ${slots} conduit${slots === 1 ? "" : "s"} at this level.`
+        : on
+          ? `Unequip ${skillDisplayName(sk) || sid}`
+          : `Equip ${skillDisplayName(sk) || sid}`;
+      const icon = document.createElement("span");
+      icon.className = "gp-mage-conduit-pick__icon";
+      mountAtlasIcon(icon, sk.gfx || null, 34);
+      const txt = document.createElement("span");
+      txt.className = "gp-mage-conduit-pick__text";
+      txt.textContent = skillDisplayName(sk) || sid;
+      btn.appendChild(icon);
+      btn.appendChild(txt);
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        setMageConduitSelected(sid, !on, charLevel);
+        if (typeof plannerRefreshSkillsPanelsHook === "function") plannerRefreshSkillsPanelsHook();
+        else if (typeof plannerRecomputePreviewHook === "function") plannerRecomputePreviewHook();
+      });
+      picker.appendChild(btn);
+    }
+    sec.appendChild(picker);
+
+    const body = document.createElement("div");
+    body.className = "gp-skills-category__body gp-mage-conduits__selected";
+    for (let slot = 0; slot < slots; slot++) {
+      const sid = selected[slot];
+      const sk = sid ? skillById[sid] : null;
+      if (sk) {
+        appendSkillCard(body, sk, sid, "", combatCtx);
+      } else {
+        const empty = document.createElement("div");
+        empty.className = "gp-mage-conduits__empty";
+        empty.textContent = `Empty conduit slot ${slot + 1}`;
+        body.appendChild(empty);
+      }
+    }
+    sec.appendChild(body);
+    container.appendChild(sec);
+  }
+
+  function renderPriestPrayersPanel(container, combatCtx) {
+    sanitizePriestPrayerSelection();
+    const available = priestAvailablePrayerSkillIds();
+    const selected = priestSelectedPrayerSkillIds();
+    const selectedSet = new Set(selected);
+    const slots = PRIEST_PRAYER_SLOT_COUNT;
+
+    const sec = document.createElement("section");
+    sec.className = "gp-skills-category gp-priest-prayers";
+    sec.innerHTML = `<h3 class="gp-skills-category__title">Rosary prayers</h3>
+      <p class="gp-skills-category__sub">Choose ${slots} prayer${slots === 1 ? "" : "s"} for Rosary. Only selected prayers affect sheet totals and damage previews.</p>`;
+
+    const picker = document.createElement("div");
+    picker.className = "gp-priest-prayers__picker";
+    picker.setAttribute("role", "group");
+    picker.setAttribute("aria-label", "Priest Rosary prayers");
+    for (let i = 0; i < available.length; i++) {
+      const sid = available[i];
+      const sk = skillById[sid];
+      if (!sk) continue;
+      const on = selectedSet.has(sid);
+      const full = !on && selected.length >= slots;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "gp-priest-prayer-pick";
+      if (on) btn.classList.add("gp-priest-prayer-pick--active");
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.disabled = full;
+      btn.title = full
+        ? `You can select ${slots} prayer${slots === 1 ? "" : "s"} for Rosary.`
+        : on
+          ? `Remove ${skillDisplayName(sk) || sid} from Rosary`
+          : `Add ${skillDisplayName(sk) || sid} to Rosary`;
+      const icon = document.createElement("span");
+      icon.className = "gp-priest-prayer-pick__icon";
+      mountAtlasIcon(icon, sk.gfx || null, 34);
+      const txt = document.createElement("span");
+      txt.className = "gp-priest-prayer-pick__text";
+      txt.textContent = skillDisplayName(sk) || sid;
+      btn.appendChild(icon);
+      btn.appendChild(txt);
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        setPriestPrayerSelected(sid, !on);
+        if (typeof plannerRefreshSkillsPanelsHook === "function") plannerRefreshSkillsPanelsHook();
+        else if (typeof plannerRecomputePreviewHook === "function") plannerRecomputePreviewHook();
+      });
+      picker.appendChild(btn);
+    }
+    sec.appendChild(picker);
+
+    const body = document.createElement("div");
+    body.className = "gp-skills-category__body gp-priest-prayers__selected";
+    for (let slot = 0; slot < slots; slot++) {
+      const sid = selected[slot];
+      const sk = sid ? skillById[sid] : null;
+      if (sk) {
+        appendSkillCard(body, sk, sid, "", combatCtx);
+      } else {
+        const empty = document.createElement("div");
+        empty.className = "gp-priest-prayers__empty";
+        empty.textContent = `Empty prayer slot ${slot + 1}`;
+        body.appendChild(empty);
+      }
+    }
+    sec.appendChild(body);
+    container.appendChild(sec);
+  }
+
   function renderClassSkillsPanel(container, classId, combatCtx) {
     container.textContent = "";
+
+    if (classId === "Mage") renderMageConduitsPanel(container, combatCtx);
+    if (classId === "Priest") renderPriestPrayersPanel(container, combatCtx);
 
     const cls = unitSheet && unitSheet.lines && unitSheet.lines.find((r) => r.id === classId);
     const classRows = (cls && cls.skills) || [];
@@ -13169,6 +13948,8 @@
       const sid = row.skill;
       if (typeof sid !== "string") continue;
       if (CLASS_SKILLS_HIDDEN_IDS.has(sid)) continue;
+      if (mageIsConduitSkillId(sid)) continue;
+      if (priestIsPrayerSkillId(sid)) continue;
       const sk = skillById[sid];
       const unlock =
         row.level != null && Number.isFinite(row.level)
@@ -13560,6 +14341,7 @@
               <span class="gp-foe-panel__name" id="gp-foe-display-name">Typical foe</span>
               <span class="gp-foe-panel__lvl" id="gp-foe-trigger-level">Lv ${MONSTER_LEVEL_DEFAULT}</span>
             </span>
+            <span class="gp-foe-panel__dungeon" id="gp-foe-display-dungeon" hidden></span>
             <span class="gp-foe-panel__armor" id="gp-foe-armor" role="group" aria-label="Target armor at preview level">
               <span class="gp-foe-panel__armor-chip" id="gp-foe-armor-phys-chip">
                 <abbr class="gp-foe-panel__armor-abbr" title="Physical armor rating">Phys</abbr>
@@ -13767,6 +14549,7 @@
     const gpFoeDropdown = root.querySelector("#gp-foe-dropdown");
     const gpFoeThumb = root.querySelector("#gp-foe-thumb");
     const gpFoeDisplayName = root.querySelector("#gp-foe-display-name");
+    const gpFoeDisplayDungeon = root.querySelector("#gp-foe-display-dungeon");
     const gpFoeTriggerLevel = root.querySelector("#gp-foe-trigger-level");
     const gpFoeArmor = root.querySelector("#gp-foe-armor");
     const gpFoeArmorPhys = root.querySelector("#gp-foe-armor-phys");
@@ -13935,7 +14718,14 @@
     }
 
     function refreshFoePanelChrome() {
-      if (gpFoeDisplayName) gpFoeDisplayName.textContent = foePlannerPanelLabel(selectedFoeUnitId);
+      const bossName = foePlannerDisplayLabel(selectedFoeUnitId);
+      const du = selectedFoeUnitId && dungeonBossByUnitId[String(selectedFoeUnitId)];
+      const dungeonName = du && du.dungeonName ? String(du.dungeonName).trim() : "";
+      if (gpFoeDisplayName) gpFoeDisplayName.textContent = bossName;
+      if (gpFoeDisplayDungeon) {
+        gpFoeDisplayDungeon.textContent = dungeonName;
+        gpFoeDisplayDungeon.hidden = !dungeonName;
+      }
       if (gpFoeThumb) {
         gpFoeThumb.innerHTML = "";
         gpFoeThumb.className = "gp-foe-panel__thumb";
@@ -14434,20 +15224,22 @@
         sheetTotals,
         derived,
         charLevel: cl,
+        classId: cls,
+        selectionSnapshot: selection,
         monsterLevel: ml,
         foeUnitId: foeUnitIdSelected(),
       };
     }
 
     function onTalentPointsChanged() {
-      plannerSkillCombatCtx = combatSnapshotForSkills();
       const cid = selClass.value;
       const cl = charLv();
       sanitizeTalentAllocationsForClass(cid);
       clampTalentAllocationsToBudget(cid, cl);
-      if (talentTreeMountEl) {
-        refreshTalentTreeVisuals(talentTreeMountEl, cid, cl);
-      }
+      sanitizeMageConduitSelection(cl);
+      sanitizePriestPrayerSelection();
+      const combatCtx = combatSnapshotForSkills();
+      refreshCombatSkillsPanels(combatCtx);
       updateCombatSnapshotOnly();
     }
 
@@ -14463,6 +15255,8 @@
     function refreshCombatSkillsPanels(combatCtx) {
       plannerSkillCombatCtx = combatCtx;
       const cl = charLv();
+      sanitizeMageConduitSelection(cl);
+      sanitizePriestPrayerSelection();
       if (classSkillsBodyEl) {
         classSkillsBodyEl.textContent = "";
         renderClassSkillsPanel(classSkillsBodyEl, selClass.value, combatCtx);
@@ -14480,6 +15274,8 @@
     }
 
     plannerRefreshSkillsPanelsHook = () => {
+      const combatCtx = combatSnapshotForSkills();
+      refreshCombatSkillsPanels(combatCtx);
       updateCombatSnapshotOnly();
     };
 
@@ -14494,6 +15290,7 @@
       const gearFlat = mergeGearTalentFlats(charLevel, cls);
       const derived = deriveCombatPreview(baseStats, gearFlat, charLevel);
       const combatCtx = combatSnapshotForSkills();
+      plannerSkillCombatCtx = combatCtx;
       refreshAllSkillCardsDynamic(combatCtx, classSkillsBodyEl, weaponSkillsBodyEl);
       renderSummary(
         summaryWrap,
@@ -14728,6 +15525,8 @@
             }
             return out;
           })(),
+          mageConduitSkillIds: mageSelectedConduitSkillIds(charLv()),
+          priestPrayerSkillIds: priestSelectedPrayerSkillIds(),
           previewFinisherComboPoints:
             typeof plannerDamagePreviewSettings.previewFinisherComboPoints === "number" &&
             Number.isFinite(plannerDamagePreviewSettings.previewFinisherComboPoints)
@@ -14899,6 +15698,28 @@
         } else {
           plannerDamagePreviewSettings.masteryBuffChoiceBySkillId = {};
         }
+        const mc = snap.damagePreview.mageConduitSkillIds;
+        if (Array.isArray(mc)) {
+          const nextC = [];
+          for (let ci = 0; ci < mc.length; ci++) {
+            const sid = mc[ci];
+            if (typeof sid === "string" && sid.trim() && !nextC.includes(sid.trim())) nextC.push(sid.trim());
+          }
+          plannerDamagePreviewSettings.mageConduitSkillIds = nextC;
+        } else {
+          plannerDamagePreviewSettings.mageConduitSkillIds = [];
+        }
+        const pp = snap.damagePreview.priestPrayerSkillIds;
+        if (Array.isArray(pp)) {
+          const nextP = [];
+          for (let pi = 0; pi < pp.length; pi++) {
+            const sid = pp[pi];
+            if (typeof sid === "string" && sid.trim() && !nextP.includes(sid.trim())) nextP.push(sid.trim());
+          }
+          plannerDamagePreviewSettings.priestPrayerSkillIds = nextP;
+        } else {
+          plannerDamagePreviewSettings.priestPrayerSkillIds = [];
+        }
         if (
           typeof snap.damagePreview.previewFinisherComboPoints === "number" &&
           Number.isFinite(snap.damagePreview.previewFinisherComboPoints)
@@ -14914,8 +15735,13 @@
           typeof ufs === "number" && Number.isFinite(ufs) ? Math.max(0, Math.floor(ufs)) : 0;
         plannerDamagePreviewSettings.previewSurgeViolenceBoost =
           snap.damagePreview.previewSurgeViolenceBoost === true;
+      } else {
+        plannerDamagePreviewSettings.mageConduitSkillIds = [];
+        plannerDamagePreviewSettings.priestPrayerSkillIds = [];
       }
       sanitizeClassSkillMasteriesForClass(selClass.value);
+      sanitizeMageConduitSelection(cl);
+      sanitizePriestPrayerSelection();
       const rawSlots = snap.slots && typeof snap.slots === "object" ? snap.slots : {};
       const slots = { ...rawSlots };
       if (!slots.arsenal && (slots.arsenal1 || slots.arsenal2)) {
