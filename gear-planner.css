@@ -1761,6 +1761,39 @@ button {
   font-weight: 600;
 }
 
+.gp-talent-summary--over-budget .gp-talent-summary__val {
+  color: #c44;
+}
+
+.gp-talent-summary__warn {
+  font-size: 0.78rem;
+  color: #c44;
+  font-weight: 700;
+}
+
+.gp-damage-delta-preview {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  max-width: 16rem;
+}
+
+.gp-damage-delta-preview__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.gp-damage-delta-preview__name {
+  color: var(--gp-text);
+  font-weight: 600;
+}
+
+.gp-damage-delta-preview__delta {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  color: var(--gp-accent);
+}
+
 .gp-talent-tree {
   border-radius: 10px;
   border: 1px solid var(--gp-border);
