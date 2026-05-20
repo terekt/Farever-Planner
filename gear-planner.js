@@ -5676,17 +5676,22 @@
   }
 
   /**
-   * All weapon-granted actives for skill panels (includes base attacks and combo attacks; excludes blocks).
+   * Weapon skill panel list: first **Base Attack** only (hides Attack 2 / 3 chain steps), all other actives, passive last.
    * @returns {string[]}
    */
   function weaponSkillIdsForPanel(item) {
     const raw = item.skills || [];
+    let baseAttackId = null;
     const passiveIds = [];
     const left = [];
     for (let i = 0; i < raw.length; i++) {
       const sid = raw[i] && raw[i].skill;
       if (typeof sid !== "string" || !sid) continue;
       if (weaponSkillHiddenFromMainSkillLists(sid)) continue;
+      if (isWeaponBaseAttackSkillId(sid)) {
+        if (!baseAttackId) baseAttackId = sid;
+        continue;
+      }
       const sk = skillById[sid];
       const ty = skillRowType(sk);
       if (ty === SKILL_TYPE_BLOCK || sid === "PhysicalBlock" || sid === "MagicBlock") continue;
@@ -5697,7 +5702,9 @@
       left.push(sid);
     }
     const passiveId = passiveIds.length ? passiveIds[passiveIds.length - 1] : null;
-    const ordered = left.slice();
+    const ordered = [];
+    if (baseAttackId) ordered.push(baseAttackId);
+    for (let i = 0; i < left.length; i++) ordered.push(left[i]);
     if (passiveId) ordered.push(passiveId);
     return ordered;
   }
