@@ -336,7 +336,11 @@
   const STAFF_PYROCLASM_ID = "Staff_Craft_S1";
   const STAFF_PYROCLASM_STATUS_ID = "Staff_Craft_S1_Status";
   /** Status **`vars.var1`** used for non-mastery mechanics (Spark restore, shield HP, …) — not sheet mastery %. */
-  const STATUS_PREVIEW_NO_MASTERY_VAR1_FALLBACK_IDS = new Set(["Mage_ShieldOfSpark_Status"]);
+  const STATUS_PREVIEW_NO_MASTERY_VAR1_FALLBACK_IDS = new Set([
+    "Mage_ShieldOfSpark_Status",
+    /** Foe magic damage taken debuff — `var1` is `dmgMult`, not sheet MagicMastery. */
+    STAFF_PYROCLASM_STATUS_ID,
+  ]);
   const BOOK_WATER_ORBS_SKILL2_ID = "Book_WaterOrbs_Skill2";
   const BOOK_WATER_ORBS_SKILL2_RECAST_ID = "Book_WaterOrbs_Skill2_Recast";
   const BOW_SPARK_SHOT_ID = "Bow_BigGame_Combo";
@@ -5672,6 +5676,33 @@
   }
 
   /**
+   * All weapon-granted actives for skill panels (includes base attacks and combo attacks; excludes blocks).
+   * @returns {string[]}
+   */
+  function weaponSkillIdsForPanel(item) {
+    const raw = item.skills || [];
+    const passiveIds = [];
+    const left = [];
+    for (let i = 0; i < raw.length; i++) {
+      const sid = raw[i] && raw[i].skill;
+      if (typeof sid !== "string" || !sid) continue;
+      if (weaponSkillHiddenFromMainSkillLists(sid)) continue;
+      const sk = skillById[sid];
+      const ty = skillRowType(sk);
+      if (ty === SKILL_TYPE_BLOCK || sid === "PhysicalBlock" || sid === "MagicBlock") continue;
+      if (sk && skillIconIsPassiveFrame(sk)) {
+        passiveIds.push(sid);
+        continue;
+      }
+      left.push(sid);
+    }
+    const passiveId = passiveIds.length ? passiveIds[passiveIds.length - 1] : null;
+    const ordered = left.slice();
+    if (passiveId) ordered.push(passiveId);
+    return ordered;
+  }
+
+  /**
    * All weapon-granted skills available for arsenal ability picks (no base-attack / block; passive last).
    * @returns {string[]}
    */
@@ -6252,7 +6283,8 @@
         if (
           sid === BLADELEAF_SWARMSTRIKE_HOST_ID ||
           sid === BOW_THRILL_OF_THE_HUNTER_ID ||
-          sid === STAFF_PYROCLASM_ID
+          sid === STAFF_PYROCLASM_ID ||
+          sid === STAFF_SCORCHING_EMBERS_ID
         ) {
           push(skillById[sid]);
         }
@@ -6315,35 +6347,14 @@
     return equippedPassivesWithScriptMemoList || [];
   }
 
-  function passiveScriptGlobalMultCornerToggleSkill(skillId) {
-    const sk = skillById[skillId];
-    return !!(sk && skillShowsGlobalBuffCornerToggle(sk, skillId, {}));
-  }
-
+  /** Buff toggles live in the **Buffs** tab — all contributors use the disabled map (default on). */
   function passiveScriptGlobalMultApplies(passiveSkillId) {
-    if (passiveScriptGlobalMultCornerToggleSkill(passiveSkillId)) {
-      const en =
-        plannerDamagePreviewSettings && plannerDamagePreviewSettings.passiveScriptGlobalEnabledByPassiveId;
-      return !!(en && passiveSkillId && en[passiveSkillId]);
-    }
     const root = plannerDamagePreviewSettings && plannerDamagePreviewSettings.passiveScriptGlobalDisabledByPassiveId;
     return !(root && passiveSkillId && root[passiveSkillId]);
   }
 
   function passiveScriptGlobalMultSet(passiveSkillId, wantApplyToOthers) {
     if (typeof passiveSkillId !== "string" || !passiveSkillId) return;
-    if (passiveScriptGlobalMultCornerToggleSkill(passiveSkillId)) {
-      if (
-        !plannerDamagePreviewSettings.passiveScriptGlobalEnabledByPassiveId ||
-        typeof plannerDamagePreviewSettings.passiveScriptGlobalEnabledByPassiveId !== "object"
-      ) {
-        plannerDamagePreviewSettings.passiveScriptGlobalEnabledByPassiveId = {};
-      }
-      const en = plannerDamagePreviewSettings.passiveScriptGlobalEnabledByPassiveId;
-      if (wantApplyToOthers) en[passiveSkillId] = true;
-      else delete en[passiveSkillId];
-      return;
-    }
     if (
       !plannerDamagePreviewSettings.passiveScriptGlobalDisabledByPassiveId ||
       typeof plannerDamagePreviewSettings.passiveScriptGlobalDisabledByPassiveId !== "object"
@@ -8647,6 +8658,66 @@
     return [...ids];
   }
 
+  /** Damaging skills for the **Buffs** tab damage table (includes weapon attacks not in arsenal picks). */
+  function collectDamagingSkillIdsForBuffPanel(classId, combatCtx) {
+    const snap = (combatCtx && combatCtx.selectionSnapshot) || selection;
+    const cl =
+      (combatCtx && Number.isFinite(combatCtx.charLevel) && combatCtx.charLevel) || CHAR_LEVEL_DEFAULT;
+    const ids = [];
+    const seen = new Set();
+    function add(sid) {
+      if (typeof sid !== "string" || !sid || seen.has(sid)) return;
+      const sk = skillById[sid];
+      if (!sk || !damagePreviewRowsExist(sk, combatCtx)) return;
+      seen.add(sid);
+      ids.push(sid);
+    }
+    for (const wkey of ["mainHand", "offHand", "arsenal"]) {
+      const s = snap[wkey];
+      if (!s || !s.item) continue;
+      const sd = SLOT_DEFS.find((x) => x.key === wkey);
+      if (sd && !slotSelectionIsActive(sd, s, classId, cl, snap)) continue;
+      if (wkey === "arsenal") {
+        if (s.pickSkill1) add(s.pickSkill1);
+        if (s.pickSkill2) add(s.pickSkill2);
+        continue;
+      }
+      for (const sid of weaponSkillIdsForPanel(s.item)) add(sid);
+    }
+    const cls = unitSheet && unitSheet.lines && unitSheet.lines.find((r) => r.id === classId);
+    const classRows = (cls && cls.skills) || [];
+    for (const row of classRows) {
+      const sid = row.skill;
+      if (typeof sid !== "string" || CLASS_SKILLS_HIDDEN_IDS.has(sid)) continue;
+      if (mageIsConduitSkillId(sid)) continue;
+      if (priestIsPrayerSkillId(sid)) continue;
+      add(sid);
+    }
+    if (classId === "Mage") {
+      for (const sid of mageSelectedConduitSkillIds()) add(sid);
+    }
+    if (classId === "Priest") {
+      for (const sid of priestSelectedPrayerSkillIds()) add(sid);
+    }
+    return ids;
+  }
+
+  function buffContributorWeaponLabel(sid) {
+    const cl =
+      plannerSkillCombatCtx && Number.isFinite(plannerSkillCombatCtx.charLevel)
+        ? plannerSkillCombatCtx.charLevel
+        : CHAR_LEVEL_DEFAULT;
+    const weapons = collectEquippedWeaponsForSkillPanel(plannerSelectedClassId(), cl);
+    for (let i = 0; i < weapons.length; i++) {
+      const it = weapons[i].item;
+      if (!it || !Array.isArray(it.skills)) continue;
+      for (let j = 0; j < it.skills.length; j++) {
+        if (it.skills[j] && it.skills[j].skill === sid) return weapons[i].label;
+      }
+    }
+    return null;
+  }
+
   function orderedModalWeaponSkillIdsForItem(idSet, item, includeBaseAttack) {
     const out = [];
     if (!item) return out;
@@ -9332,9 +9403,6 @@
     textCol.querySelectorAll(".gp-char-skill__stack-row").forEach((el) => el.remove());
     appendSurgeViolenceFinalComboRow(textCol, sid);
     appendComputedSkillDamageToCard(textCol, sk, ctxForSkill);
-    if (skillShowsGlobalBuffCornerToggle(sk, sid, { weaponSlotKey: weaponSlotKey })) {
-      syncGlobalBuffCornerToggleUi(card, sid);
-    }
     const hostStatusBuffs = previewableStatusBuffsForHostSkill(sk);
     if (hostStatusBuffs.length) {
       for (let hsi = 0; hsi < hostStatusBuffs.length; hsi++) {
@@ -9896,14 +9964,6 @@
     const r = grantorRank != null && Number.isFinite(grantorRank) ? Math.max(1, Math.floor(grantorRank)) : 1;
     const fromAffix = talentAffixFlatSumAtRank(statusSk, attrId, r, hostMasteryId);
     if (fromAffix > 0) return statusPreviewFlatMultiplier(statusSk) * fromAffix;
-    if (
-      (attrId === "PhysicalMastery" || attrId === "MagicMastery") &&
-      !STATUS_PREVIEW_NO_MASTERY_VAR1_FALLBACK_IDS.has(statusSk.id)
-    ) {
-      const vars = mergedVarsForSkillDesc(statusSk, r);
-      const v = vars && vars.var1;
-      if (typeof v === "number" && Number.isFinite(v)) return presentationFlatForAffixFactor(v, 1);
-    }
     return 0;
   }
 
@@ -10004,6 +10064,32 @@
     return totals;
   }
 
+  /**
+   * Sheet MagicMastery % used by **Discipline** (`var2 ×` magic) — class base + gear + talents + status flats/ratios,
+   * before dynamic Physical from Discipline is applied.
+   */
+  function sheetMagicMasteryPctBeforeDiscipline(classId, charLevel, selectionSnapshot) {
+    const baseStats = computeClassBaseStats(classId, charLevel);
+    const gear = sumGearAffixes(charLevel, classId, selectionSnapshot);
+    const talStatic = sumTalentAffixFlats(classId, { skipDynAffixes: true });
+    const combined = { ...gear };
+    for (const k of Object.keys(talStatic)) {
+      combined[k] = (combined[k] || 0) + talStatic[k];
+    }
+    const stFlat = sumPreviewStatusBuffFlats(classId, selectionSnapshot, charLevel);
+    const stRatio = sumPreviewStatusBuffARatios(classId, selectionSnapshot, charLevel);
+    const out = { ...combined };
+    for (const k of Object.keys(stFlat)) {
+      out[k] = (out[k] || 0) + stFlat[k];
+    }
+    const ratio = stRatio.MagicMastery;
+    if (typeof ratio === "number" && Number.isFinite(ratio) && ratio !== 0) {
+      const baseVal = (baseStats.MagicMastery || 0) + (out.MagicMastery || 0);
+      out.MagicMastery = (out.MagicMastery || 0) + baseVal * ratio;
+    }
+    return (baseStats.MagicMastery || 0) + (out.MagicMastery || 0);
+  }
+
   /** Gear simulator flats plus talent **`affixes`** contributions for sheet / combat preview. */
   function mergeGearTalentFlats(charLevel, classId, selectionSnapshot) {
     const baseStats = computeClassBaseStats(classId, charLevel);
@@ -10016,9 +10102,6 @@
 
     const stFlat = sumPreviewStatusBuffFlats(classId, selectionSnapshot, charLevel);
     const stRatio = sumPreviewStatusBuffARatios(classId, selectionSnapshot, charLevel);
-    const magicForDiscipline =
-      (baseStats.MagicMastery || 0) + (combined.MagicMastery || 0) + (stFlat.MagicMastery || 0);
-    const dyn = sumTalentDynamicMasteryFlats(classId, magicForDiscipline);
 
     const out = { ...combined };
     for (const k of Object.keys(stFlat)) {
@@ -10031,6 +10114,8 @@
       const baseVal = (baseStats[attr] || 0) + (out[attr] || 0);
       out[attr] = (out[attr] || 0) + baseVal * ratio;
     }
+    const magicForDiscipline = (baseStats.MagicMastery || 0) + (out.MagicMastery || 0);
+    const dyn = sumTalentDynamicMasteryFlats(classId, magicForDiscipline);
     for (const k of Object.keys(dyn)) {
       out[k] = (out[k] || 0) + dyn[k];
     }
@@ -11425,6 +11510,15 @@
       if (plannerSelectedClassId() !== "Mage") return outTwin;
       critDerived = outTwin;
     }
+    if (consumerSk && consumerSk.id === FISTS_SINK_TO_BOTTOM_ID && skillDamageScalingCondsRank(consumerSk) >= 2) {
+      const outSink = { ...critDerived };
+      const bag = mergedVarsForSkillDesc(consumerSk, skillDamageScalingCondsRank(consumerSk));
+      const add =
+        bag && typeof bag.var1 === "number" && Number.isFinite(bag.var1) ? bag.var1 * 100 : 25;
+      outSink.CritDamage_pct = (outSink.CritDamage_pct || 0) + add;
+      if (plannerSelectedClassId() !== "Mage") return outSink;
+      critDerived = outSink;
+    }
     if (plannerSelectedClassId() !== "Mage" || !consumerSk) return critDerived;
     const out = { ...critDerived };
     if (
@@ -11961,17 +12055,7 @@
   }
 
   function collectSummaryMagicMasteryForDisciplineBase(classId, charLevel, selectionSnapshot) {
-    const baseFull = computeClassBaseStats(classId, charLevel);
-    const gear = sumGearAffixes(charLevel, classId, selectionSnapshot);
-    const tal = sumTalentAffixFlats(classId, { skipDynAffixes: true });
-    const comb = { ...gear };
-    for (const k of Object.keys(tal)) comb[k] = (comb[k] || 0) + tal[k];
-    const stF = sumPreviewStatusBuffFlats(classId, selectionSnapshot, charLevel);
-    return (
-      (baseFull.MagicMastery || 0) +
-      (comb.MagicMastery || 0) +
-      (stF.MagicMastery || 0)
-    );
+    return sheetMagicMasteryPctBeforeDiscipline(classId, charLevel, selectionSnapshot);
   }
 
   /**
@@ -14665,9 +14749,6 @@
     top.appendChild(iconWrap);
     top.appendChild(textCol);
     card.appendChild(top);
-    if (skillShowsGlobalBuffCornerToggle(sk, sid, { weaponSlotKey: weaponSlotKeyForPower })) {
-      appendGlobalBuffCornerToggle(card, sid);
-    }
     wireCharSkillCardDamageTooltips(card, sk, sid, ctxForSkill);
     container.appendChild(card);
   }
@@ -14811,6 +14892,170 @@
     container.appendChild(sec);
   }
 
+  function appendBuffToggleCard(parent, sk, sid) {
+    if (!parent || !sk || !sid) return;
+    const on = passiveScriptGlobalMultApplies(sid);
+    const card = document.createElement("div");
+    card.className = "gp-buff-row";
+    if (!on) card.classList.add("gp-buff-row--off");
+    card.dataset.skillId = sid;
+
+    const iconWrap = document.createElement("div");
+    iconWrap.className = "gp-buff-row__icon";
+    const iconInner = document.createElement("span");
+    iconInner.className = skillIconIsPassiveFrame(sk)
+      ? "gp-skill-icon gp-skill-icon--passive"
+      : "gp-skill-icon gp-skill-icon--active";
+    mountAtlasIcon(iconInner, sk.gfx || null, 40);
+    iconWrap.appendChild(iconInner);
+
+    const meta = document.createElement("div");
+    meta.className = "gp-buff-row__meta";
+    const nm = document.createElement("div");
+    nm.className = "gp-buff-row__name";
+    nm.textContent = skillDisplayName(sk) || sid;
+    const sub = document.createElement("div");
+    sub.className = "gp-buff-row__sub gp-muted";
+    sub.textContent = skillIconIsPassiveFrame(sk)
+      ? "Passive · affects other skills"
+      : "Active · affects other skills";
+    meta.appendChild(nm);
+    meta.appendChild(sub);
+
+    const tg = document.createElement("button");
+    tg.type = "button";
+    tg.className = "gp-buff-row__toggle";
+    tg.setAttribute("role", "switch");
+    tg.setAttribute("aria-checked", on ? "true" : "false");
+    tg.title = on
+      ? "Buff applies to other skills’ damage (on). Click to disable."
+      : "Buff does not apply (off). Click to enable.";
+    tg.setAttribute(
+      "aria-label",
+      on ? `${skillDisplayName(sk) || sid} buff on for damage previews` : `${skillDisplayName(sk) || sid} buff off`
+    );
+    tg.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      passiveScriptGlobalMultSet(sid, !passiveScriptGlobalMultApplies(sid));
+      const nowOn = passiveScriptGlobalMultApplies(sid);
+      card.classList.toggle("gp-buff-row--off", !nowOn);
+      tg.setAttribute("aria-checked", nowOn ? "true" : "false");
+      tg.title = nowOn
+        ? "Buff applies to other skills’ damage (on). Click to disable."
+        : "Buff does not apply (off). Click to enable.";
+      if (typeof plannerRefreshSkillsPanelsHook === "function") plannerRefreshSkillsPanelsHook();
+      else if (typeof plannerRecomputePreviewHook === "function") plannerRecomputePreviewHook();
+    });
+
+    card.appendChild(iconWrap);
+    card.appendChild(meta);
+    card.appendChild(tg);
+    parent.appendChild(card);
+  }
+
+  function renderBuffsPanel(container, classId, combatCtx) {
+    container.textContent = "";
+    const contributors = globalBuffContributorsFromLoadout();
+    if (!contributors.length) {
+      container.innerHTML = `<p class="gp-muted">No buff contributors in your current loadout.</p>`;
+      return;
+    }
+
+    const byGroup = new Map();
+    for (let ci = 0; ci < contributors.length; ci++) {
+      const sk = contributors[ci];
+      const sid = sk.id;
+      let group = "Class skills";
+      const wLab = buffContributorWeaponLabel(sid);
+      if (wLab) group = wLab;
+      else if (mageIsConduitSkillId(sid)) group = "Mage conduits";
+      else if (priestIsPrayerSkillId(sid)) group = "Priest prayers";
+      if (!byGroup.has(group)) byGroup.set(group, []);
+      byGroup.get(group).push(sk);
+    }
+
+    const groupOrder = ["Main hand", "Off-hand", "Arsenal", "Class skills", "Mage conduits", "Priest prayers"];
+    const orderedGroups = [];
+    for (let gi = 0; gi < groupOrder.length; gi++) {
+      if (byGroup.has(groupOrder[gi])) orderedGroups.push(groupOrder[gi]);
+    }
+    for (const g of byGroup.keys()) {
+      if (orderedGroups.indexOf(g) < 0) orderedGroups.push(g);
+    }
+
+    const secBuffs = document.createElement("section");
+    secBuffs.className = "gp-skills-category gp-buffs-panel";
+    secBuffs.innerHTML = `<h3 class="gp-skills-category__title">Buff toggles</h3>
+      <p class="gp-skills-category__sub">Turn buffs on or off for damage previews. Changes apply to every skill in the table below and on class / weapon skill cards.</p>`;
+    const buffBody = document.createElement("div");
+    buffBody.className = "gp-buffs-panel__toggles";
+
+    for (let gi = 0; gi < orderedGroups.length; gi++) {
+      const g = orderedGroups[gi];
+      const list = byGroup.get(g);
+      const block = document.createElement("div");
+      block.className = "gp-buffs-panel__group";
+      const gh = document.createElement("h4");
+      gh.className = "gp-buffs-panel__group-title";
+      gh.textContent = g;
+      block.appendChild(gh);
+      const grid = document.createElement("div");
+      grid.className = "gp-buffs-panel__grid";
+      for (let li = 0; li < list.length; li++) {
+        appendBuffToggleCard(grid, list[li], list[li].id);
+      }
+      block.appendChild(grid);
+      buffBody.appendChild(block);
+    }
+    secBuffs.appendChild(buffBody);
+    container.appendChild(secBuffs);
+
+    const skillIds = collectDamagingSkillIdsForBuffPanel(classId, combatCtx);
+    skillIds.sort((a, b) => {
+      const na = skillDisplayName(skillById[a]) || a;
+      const nb = skillDisplayName(skillById[b]) || b;
+      return na.localeCompare(nb);
+    });
+
+    const secDmg = document.createElement("section");
+    secDmg.className = "gp-skills-category gp-buffs-panel__damage";
+    secDmg.innerHTML = `<h3 class="gp-skills-category__title">Skill damage vs foe</h3>
+      <p class="gp-skills-category__sub">Expected total damage per skill at your current foe level — updates when you toggle buffs above.</p>`;
+    const table = document.createElement("div");
+    table.className = "gp-buffs-damage-table";
+    table.setAttribute("role", "table");
+
+    const head = document.createElement("div");
+    head.className = "gp-buffs-damage-table__row gp-buffs-damage-table__row--head";
+    head.setAttribute("role", "row");
+    head.innerHTML = `<span class="gp-buffs-damage-table__skill" role="columnheader">Skill</span><span class="gp-buffs-damage-table__dmg" role="columnheader">Expected dmg</span>`;
+    table.appendChild(head);
+
+    if (!skillIds.length) {
+      const empty = document.createElement("p");
+      empty.className = "gp-muted";
+      empty.textContent = "No damaging skills to preview in this loadout.";
+      secDmg.appendChild(empty);
+    } else {
+      for (let si = 0; si < skillIds.length; si++) {
+        const sid = skillIds[si];
+        const sk = skillById[sid];
+        if (!sk) continue;
+        const dmg = skillTotalExpectedDamageSum(sk, combatCtx);
+        const row = document.createElement("div");
+        row.className = "gp-buffs-damage-table__row";
+        row.setAttribute("role", "row");
+        const dmgStr = dmg != null && Number.isFinite(dmg) ? formatDmgAmount(Math.max(0, dmg)) : "—";
+        row.innerHTML = `<span class="gp-buffs-damage-table__skill" role="cell">${escapeHtml(
+          skillDisplayName(sk) || sid
+        )}</span><span class="gp-buffs-damage-table__dmg" role="cell">${escapeHtml(dmgStr)}</span>`;
+        table.appendChild(row);
+      }
+      secDmg.appendChild(table);
+    }
+    container.appendChild(secDmg);
+  }
+
   function renderClassSkillsPanel(container, classId, combatCtx) {
     container.textContent = "";
 
@@ -14869,14 +15114,15 @@
         wh.className = "gp-skills-weapon-block__title";
         wh.textContent = `${label} — ${itemDisplayName(item)}`;
         sub.appendChild(wh);
-        const allowedIds = weaponSkillPickIds(item);
+        const panelIds = weaponSkillIdsForPanel(item);
+        const arsenalPickIds = weaponSkillPickIds(item);
         let ids;
         if (key === "arsenal") {
           const ar = selection.arsenal;
           const picked = [];
           if (ar && ar.pickSkill1) picked.push(ar.pickSkill1);
           if (ar && ar.pickSkill2) picked.push(ar.pickSkill2);
-          ids = [...new Set(picked)].filter((sid) => allowedIds.includes(sid));
+          ids = [...new Set(picked)].filter((sid) => arsenalPickIds.includes(sid));
           if (!ids.length) {
             const hint = document.createElement("p");
             hint.className = "gp-muted";
@@ -14887,8 +15133,7 @@
             continue;
           }
         } else {
-          const baseAttackId = weaponFirstBaseAttackSkillId(item);
-          ids = baseAttackId ? [baseAttackId].concat(allowedIds) : allowedIds;
+          ids = panelIds;
         }
         const seenInWeapon = new Set();
         for (let j = 0; j < ids.length; j++) {
@@ -15321,7 +15566,9 @@
 <div class="gear-planner">
   <header class="gear-planner__header">
     <div class="gear-planner__header-main">
-      <div class="gear-planner__title-logo" id="gp-title-logo" aria-hidden="true"></div>
+      <a class="gear-planner__title-logo-link" href="https://terekt.github.io/Farever-Planner/" target="_blank" rel="noopener noreferrer" aria-label="Open Farever Planner home page">
+        <div class="gear-planner__title-logo" id="gp-title-logo"></div>
+      </a>
       <a class="gear-planner__discord-link" href="https://discord.gg/Rsgf62YAQG" target="_blank" rel="noopener noreferrer" aria-label="Join the Farever Planner Discord server">
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 50 50" aria-hidden="true" focusable="false"><path d="M42.298,11.65c-0.676-1.021-1.633-1.802-2.768-2.256c-2.464-0.988-4.583-1.648-6.479-2.02C31.721,7.114,30.404,7.768,29.771,9l-0.158,0.308c-1.404-0.155-2.895-0.207-4.593-0.164c-1.741-0.042-3.237,0.009-4.643,0.164L20.22,9c-0.633-1.232-1.952-1.885-3.279-1.625c-1.896,0.371-4.016,1.031-6.479,2.02c-1.134,0.454-2.091,1.234-2.768,2.256c-4.721,7.131-6.571,14.823-5.655,23.517c0.032,0.305,0.202,0.578,0.461,0.741c3.632,2.29,6.775,3.858,9.891,4.936c1.303,0.455,2.748-0.054,3.517-1.229l1.371-2.101c-1.092-0.412-2.158-0.9-3.18-1.483c-0.479-0.273-0.646-0.884-0.373-1.363c0.273-0.481,0.884-0.65,1.364-0.373c3.041,1.734,6.479,2.651,9.942,2.651s6.901-0.917,9.942-2.651c0.479-0.277,1.09-0.108,1.364,0.373c0.273,0.479,0.106,1.09-0.373,1.363c-1.056,0.603-2.16,1.105-3.291,1.524l1.411,2.102c0.581,0.865,1.54,1.357,2.528,1.357c0.322,0,0.647-0.053,0.963-0.161c3.125-1.079,6.274-2.649,9.914-4.944c0.259-0.163,0.429-0.437,0.461-0.741C48.869,26.474,47.019,18.781,42.298,11.65z M18.608,28.983c-1.926,0-3.511-2.029-3.511-4.495c0-2.466,1.585-4.495,3.511-4.495s3.511,2.029,3.511,4.495C22.119,26.954,20.534,28.983,18.608,28.983z M31.601,28.957c-1.908,0-3.478-2.041-3.478-4.522s1.57-4.522,3.478-4.522c1.908,0,3.478,2.041,3.478,4.522S33.509,28.957,31.601,28.957z"></path></svg>
         <span class="gear-planner__discord-bubble">Join the Discord to report bugs and share feedback!</span>
@@ -15439,6 +15686,7 @@
           <button type="button" class="gp-tab gp-tab--active" role="tab" aria-selected="true" aria-controls="gp-panel-equipment" id="gp-tab-equipment">Equipment</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-class-skills" id="gp-tab-class-skills" tabindex="-1">Class skill</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-weapon-skills" id="gp-tab-weapon-skills" tabindex="-1">Weapon skill</button>
+          <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-buffs" id="gp-tab-buffs" tabindex="-1">Buffs</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-talent-tree" id="gp-tab-talent-tree" tabindex="-1">Talent tree</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-consumables" id="gp-tab-consumables" tabindex="-1">Consumables</button>
         </div>
@@ -15452,6 +15700,9 @@
           </div>
           <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-weapon-skills" aria-labelledby="gp-tab-weapon-skills" hidden>
             <div id="gp-weapon-skills-body" class="gear-planner__character-skills-body"></div>
+          </div>
+          <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-buffs" aria-labelledby="gp-tab-buffs" hidden>
+            <div id="gp-buffs-body" class="gear-planner__character-skills-body"></div>
           </div>
           <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-talent-tree" aria-labelledby="gp-tab-talent-tree" hidden>
             <h2 class="gear-planner__tab-panel-title">Talent tree</h2>
@@ -15626,6 +15877,7 @@
     const slotsEl = root.querySelector("#gp-slots");
     const classSkillsBodyEl = root.querySelector("#gp-class-skills-body");
     const weaponSkillsBodyEl = root.querySelector("#gp-weapon-skills-body");
+    const buffsBodyEl = root.querySelector("#gp-buffs-body");
     const talentTreeMountEl = root.querySelector("#gp-talent-tree-mount");
     const consumablesMountEl = root.querySelector("#gp-consumables-mount");
     const summaryWrap = root.querySelector("#gp-summary-wrap");
@@ -16319,6 +16571,10 @@
       if (weaponSkillsBodyEl) {
         weaponSkillsBodyEl.textContent = "";
         renderWeaponSkillsPanel(weaponSkillsBodyEl, selClass.value, combatCtx);
+      }
+      if (buffsBodyEl) {
+        buffsBodyEl.textContent = "";
+        renderBuffsPanel(buffsBodyEl, selClass.value, combatCtx);
       }
       if (talentTreeMountEl) {
         renderTalentTreesPanel(talentTreeMountEl, selClass.value, cl, combatCtx, onTalentPointsChanged);
