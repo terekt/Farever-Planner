@@ -1809,7 +1809,57 @@ button {
 .gp-damage-delta-preview__delta {
   font-variant-numeric: tabular-nums;
   font-weight: 800;
-  color: var(--gp-accent);
+  color: var(--gp-muted);
+}
+
+.gp-damage-delta-preview__delta--up {
+  color: #2d8a4e;
+}
+
+.gp-damage-delta-preview__delta--down {
+  color: #c44a4a;
+}
+
+#gear-planner-root:not(.gp-planner--advanced-damage) .gp-dmg-tip-row__sub {
+  display: none;
+}
+
+.gp-planner-settings-advanced {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin-top: 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--gp-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.gp-planner-settings-advanced__title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.gp-planner-settings-advanced__sub {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--gp-muted);
+  margin-top: 0.15rem;
+  line-height: 1.35;
+}
+
+.gp-buffs-damage-table__skill,
+.gp-buffs-damage-table__dmg {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.gp-buff-row__name--tip {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
 
 .gp-talent-tree {

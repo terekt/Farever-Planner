@@ -384,6 +384,31 @@
   const WARRIOR_EXPOSED_ESSENCE_ID = "Warrior_ExposedEssence";
   const WARRIOR_TALENT_RAGE_SHIELD_ID = "Warrior_Talent_RageShield";
   const WARRIOR_TALENT_RAGE_SHIELD_STATUS_ID = "Warrior_Talent_RageShield_Status";
+  const WARRIOR_TALENT_BLOODLETTING_ID = "Warrior_Talent_Bloodletting";
+  const WARRIOR_TALENT_BLOODFEAST_ID = "Warrior_Talent_Bloodfeast";
+  const AXE_TEAR_ID = "Axe_Boomerang_Combo";
+  const AXE_BONETHROW_ID = "Axe_Boomerang_Skill1";
+  const AXE_BLOODRAGE_AURA_ID = "Axe_Boomerang_Skill_Passive";
+  const DA_GROUNDSWELL_STRIKE_ID = "DA_Water_Skill2";
+  const DM_SENTENCE_ID = "DM_Multispin_Combo";
+  const DM_SENTENCE_STATUS_ID = "DM_Multispin_Combo_Status";
+  const DM_ZEALOUS_SPINS_ID = "DM_Multispin_Skill1";
+  const DM_ZEALOUS_SPINS_ARMOR_STATUS_ID = "DM_Multispin_Skill1_Status";
+  const DM_ZEAL_PASSIVE_ID = "DM_Multispin_Passive";
+  const DM_ZEAL_DAMAGE_BUFF_STATUS_ID = "DM_Multispin_Passive_Status2";
+  const GA_BRUTAL_FRENZY_ID = "GA_Craft_FinalCombo";
+  const GM_MAD_BUZZ_ID = "GM_MassGrab_Passive";
+  const GM_REVERSE_HONEY_SPIN_ID = "GM_MassGrab_Skill1";
+  const GM_REVERSE_HONEY_SPIN_ARMOR_STATUS_ID = "GM_MassGrab_Skill1_Status2";
+  /** Warrior bleed talents — show per-skill impact, not direct damage on the talent card. */
+  const WARRIOR_TALENT_PER_SKILL_IMPACT_IDS = new Set([
+    WARRIOR_HEMORRHAGE_TALENT_ID,
+    WARRIOR_TALENT_BLOODLETTING_ID,
+    WARRIOR_TALENT_EXSANGUINATION_ID,
+    WARRIOR_EXPOSED_ESSENCE_ID,
+    WARRIOR_TALENT_CRACKING_BLOOD_ID,
+    WARRIOR_TALENT_BLOODFEAST_ID,
+  ]);
   const JUDGMENT_HOST_ID = "Priest_Sig_DivineIntervention";
   const JUDGMENT_M1_MASTERY_ID = "Priest_Judgment_M1";
   const JUDGMENT_STATUS_ID = "Priest_Judgment_Status";
@@ -855,6 +880,7 @@
         d.ufs = Math.floor(dp.previewUrgeFinisherStreak);
       }
       if (dp.previewSurgeViolenceBoost === true) d.sf = true;
+      if (dp.showAdvancedDamageDetail === true) d.ad = true;
       if (Object.keys(d).length) out.d = d;
     }
     const cons = full.consumables;
@@ -959,6 +985,7 @@
       if (typeof d.fc === "number" && Number.isFinite(d.fc)) full.damagePreview.previewFinisherComboPoints = Math.floor(d.fc);
       if (typeof d.ufs === "number" && Number.isFinite(d.ufs)) full.damagePreview.previewUrgeFinisherStreak = Math.floor(d.ufs);
       if (d.sf === true) full.damagePreview.previewSurgeViolenceBoost = true;
+      if (d.ad === true) full.damagePreview.showAdvancedDamageDetail = true;
     }
     for (let ci = 0; ci < CONSUMABLE_BUFF_KIND_DEFS.length; ci++) {
       const def = CONSUMABLE_BUFF_KIND_DEFS[ci];
@@ -1313,6 +1340,8 @@
     mageConduitSkillIds: [],
     /** Priest prayer skill ids selected in the custom Rosary bar. */
     priestPrayerSkillIds: [],
+    /** When true, show damage breakdown sub-text (scaling detail, crit notes, etc.) in tooltips and skill cards. */
+    showAdvancedDamageDetail: false,
   };
 
   const MYSTIC_EMPOWERMENT_HOST_ID = "Mage_MysticEmpowerment";
@@ -4907,6 +4936,7 @@
   /** Merge **`refs`** damage into previews when the host is passive-authored or a known multi-hit host (e.g. Static Nova M2). */
   function skillAggregatesReferencedDamageRows(sk) {
     if (!sk) return false;
+    if (sk.id === GM_MAD_BUZZ_ID) return false;
     if (sk.id === BOOK_WATER_ORBS_SKILL2_ID) return true;
     if (skillIconIsPassiveFrame(sk)) return true;
     if (sk.id === "Mage_StaticNova") {
@@ -4917,7 +4947,59 @@
   }
 
   function skillSkipsCombatDamagePreview(sk) {
-    return !!(sk && typeof sk.id === "string" && SKILL_IDS_SKIP_COMBAT_DAMAGE_PREVIEW.has(sk.id));
+    if (sk && typeof sk.id === "string" && SKILL_IDS_SKIP_COMBAT_DAMAGE_PREVIEW.has(sk.id)) return true;
+    if (sk && typeof sk.id === "string" && WARRIOR_TALENT_PER_SKILL_IMPACT_IDS.has(sk.id)) return true;
+    return false;
+  }
+
+  function talentSkipsDirectDamagePreview(sid) {
+    if (sid === WARRIOR_TALENT_RAGE_SHIELD_ID) return true;
+    return typeof sid === "string" && WARRIOR_TALENT_PER_SKILL_IMPACT_IDS.has(sid);
+  }
+
+  function plannerShowAdvancedDamageDetail() {
+    return !!(plannerDamagePreviewSettings && plannerDamagePreviewSettings.showAdvancedDamageDetail);
+  }
+
+  function syncPlannerAdvancedDamageDetailClass() {
+    const el = document.getElementById("gear-planner-root");
+    if (!el) return;
+    el.classList.toggle("gp-planner--advanced-damage", plannerShowAdvancedDamageDetail());
+  }
+
+  /** Parenthetical damage sub-text — hidden unless **Advanced descriptions** is on in settings. */
+  function formatDamageDetailParenHtml(detail) {
+    if (!plannerShowAdvancedDamageDetail()) return "";
+    if (detail == null || !String(detail).trim()) return "";
+    return ` <span class="gp-char-skill__computed-dmg-detail">(${escapeHtml(String(detail))})</span>`;
+  }
+
+  function skillShowsWeaponRankPicker(sid) {
+    return typeof sid === "string" && sid && !isWeaponBaseAttackSkillId(sid);
+  }
+
+  function plannerSheetMaxHealthFromCombatCtx(combatCtx) {
+    if (!combatCtx || !combatCtx.sheetTotals) return 0;
+    const vit = combatCtx.sheetTotals.Vitality || 0;
+    const flat = combatCtx.sheetTotals.MaxHealth || 0;
+    return vit * 3 + flat;
+  }
+
+  function formatDamageDeltaColored(delta) {
+    if (!(typeof delta === "number" && Number.isFinite(delta))) {
+      return `<span class="gp-damage-delta-preview__delta">—</span>`;
+    }
+    if (Math.abs(delta) < 1e-9) {
+      return `<span class="gp-damage-delta-preview__delta">0</span>`;
+    }
+    if (delta > 0) {
+      return `<span class="gp-damage-delta-preview__delta gp-damage-delta-preview__delta--up">+${escapeHtml(
+        formatDmgAmount(delta)
+      )}</span>`;
+    }
+    return `<span class="gp-damage-delta-preview__delta gp-damage-delta-preview__delta--down">${escapeHtml(
+      formatDmgAmount(delta)
+    )}</span>`;
   }
 
   /** **`steps[].cond.mastery` / `effects[].cond.mastery`** — include only when that rune is selected on **`hostSk`**. */
@@ -6291,7 +6373,10 @@
           sid === BLADELEAF_SWARMSTRIKE_HOST_ID ||
           sid === BOW_THRILL_OF_THE_HUNTER_ID ||
           sid === STAFF_PYROCLASM_ID ||
-          sid === STAFF_SCORCHING_EMBERS_ID
+          sid === STAFF_SCORCHING_EMBERS_ID ||
+          sid === DM_SENTENCE_ID ||
+          sid === DM_ZEAL_PASSIVE_ID ||
+          sid === DM_ZEALOUS_SPINS_ID
         ) {
           push(skillById[sid]);
         }
@@ -6446,7 +6531,48 @@
     m *= mageKineticSurgePhysicalMultiplier(consumerSk, p);
     m *= pyroclasmMagicDamageMultiplier(consumerSk, p);
     m *= scorchingEmbersMagicWeaponSkillMultiplier(consumerSk);
+    m *= sentenceFoeDamageDebuffMultiplier();
+    if (consumerSk && consumerSk.id === DM_ZEALOUS_SPINS_ID) {
+      m *= zealZealousSpinsDamageBuffMultiplier();
+    }
     return m;
+  }
+
+  function equippedWeaponSkillById(sid) {
+    if (typeof sid !== "string" || !sid) return null;
+    const cl =
+      plannerSkillCombatCtx && Number.isFinite(plannerSkillCombatCtx.charLevel)
+        ? plannerSkillCombatCtx.charLevel
+        : CHAR_LEVEL_DEFAULT;
+    const weapons = collectEquippedWeaponsForSkillPanel(plannerSelectedClassId(), cl);
+    for (let wi = 0; wi < weapons.length; wi++) {
+      const it = weapons[wi].item;
+      if (!it || !Array.isArray(it.skills)) continue;
+      for (let si = 0; si < it.skills.length; si++) {
+        if (it.skills[si] && it.skills[si].skill === sid) return skillById[sid];
+      }
+    }
+    return null;
+  }
+
+  function sentenceFoeDamageDebuffMultiplier() {
+    if (!passiveScriptGlobalMultApplies(DM_SENTENCE_ID)) return 1;
+    const host = equippedWeaponSkillById(DM_SENTENCE_ID);
+    if (!host || skillDamageScalingCondsRank(host) < 1) return 1;
+    const st = skillById[DM_SENTENCE_STATUS_ID];
+    const bag = st ? mergedVarsForSkillDesc(st, skillDamageScalingCondsRank(host)) : {};
+    const d = bag && typeof bag.damage === "number" && Number.isFinite(bag.damage) ? bag.damage : 0.1;
+    return 1 + d;
+  }
+
+  function zealZealousSpinsDamageBuffMultiplier() {
+    if (!passiveScriptGlobalMultApplies(DM_ZEAL_PASSIVE_ID)) return 1;
+    const passive = skillById[DM_ZEAL_PASSIVE_ID];
+    const pr = passive ? skillDamageScalingCondsRank(passive) : 1;
+    const st = skillById[DM_ZEAL_DAMAGE_BUFF_STATUS_ID];
+    const bag = st ? mergedVarsForSkillDesc(st, Math.max(1, pr)) : {};
+    const d = bag && typeof bag.damage === "number" && Number.isFinite(bag.damage) ? bag.damage : 0.75;
+    return 1 + d;
   }
 
   /** Lines describing what an enchant-granted skill does (for previews / tooltips). */
@@ -6553,6 +6679,28 @@
     return hostId === FISTS_SINK_TO_BOTTOM_ID && srcId === FISTS_SINK_TO_BOTTOM_ID && stepId === "HitProc";
   }
 
+  function skillPreviewShouldSkipBrutalFrenzyBonusStep(hostSk, srcSk, step) {
+    const hostId = hostSk && hostSk.id;
+    const srcId = srcSk && srcSk.id;
+    const stepId = step && step.id;
+    return (
+      hostId === GA_BRUTAL_FRENZY_ID &&
+      srcId === GA_BRUTAL_FRENZY_ID &&
+      stepId === "Attack" &&
+      skillDamageScalingCondsRank(hostSk) < 3
+    );
+  }
+
+  /** **Sentence** rank 3 **BonusDamage** only when the debuff toggle is on. */
+  function skillPreviewShouldSkipSentenceBonusStep(hostSk, srcSk, step) {
+    const hostId = hostSk && hostSk.id;
+    const srcId = srcSk && srcSk.id;
+    const stepId = step && step.id;
+    if (hostId !== DM_SENTENCE_ID || srcId !== DM_SENTENCE_ID || stepId !== "BonusDamage") return false;
+    if (skillDamageScalingCondsRank(hostSk) < 3) return true;
+    return !passiveScriptGlobalMultApplies(DM_SENTENCE_ID);
+  }
+
   function skillDescriptionShouldSkipProcDamageStep(hostSk, srcSk, step) {
     const hostId = hostSk && hostSk.id;
     const srcId = srcSk && srcSk.id;
@@ -6639,6 +6787,8 @@
         for (let si = 0; si < src.steps.length; si++) {
           const step = src.steps[si];
           if (skillPreviewShouldSkipProcDamageStep(sk, src, step)) continue;
+          if (skillPreviewShouldSkipBrutalFrenzyBonusStep(sk, src, step)) continue;
+          if (skillPreviewShouldSkipSentenceBonusStep(sk, src, step)) continue;
           const effs = step.effects || [];
           for (let ei = 0; ei < effs.length; ei++) {
             const e = effs[ei];
@@ -6703,7 +6853,7 @@
           const der = combatCtx.derived;
           const baseMult = plannerBaseUiHitDamageMultiplier(der, root);
           const preCritFlat = plannerPreCritFlatDamageMultiplier(der);
-          const armorMult = plannerAverageDamageMultiplier(combatCtx, root);
+          const armorMult = plannerAverageDamageMultiplier(combatCtx, root, sk);
           let fs = 0;
           for (let gi = 0; gi < group.length; gi++) {
             const p = group[gi];
@@ -7462,7 +7612,7 @@
     return plannerPreCritFlatDamageMultiplier(derived) * plannerCritDamageMultiplier(derived);
   }
 
-  function plannerAverageDamageMultiplier(combatCtx, affinityRoot) {
+  function plannerAverageDamageMultiplier(combatCtx, affinityRoot, consumerSk) {
     if (!combatCtx || !combatCtx.derived) return 1;
     const der = combatCtx.derived;
     const cl = combatCtx.charLevel != null ? combatCtx.charLevel : CHAR_LEVEL_DEFAULT;
@@ -7472,8 +7622,32 @@
     const am = plannerMonsterArmorMagicPts(ml, foeId);
     let mult = 1;
     if (affinityRoot === "Physical") {
+      if (
+        consumerSk &&
+        consumerSk.id === DA_GROUNDSWELL_STRIKE_ID &&
+        skillDamageScalingCondsRank(consumerSk) >= 2
+      ) {
+        return 1;
+      }
       const pen = der.ArmorPenetration_pct || 0;
-      mult *= 1 - plannerAffinityMitigatedFraction(am.armorPts, pen, cl);
+      let armorPts = am.armorPts;
+      if (
+        consumerSk &&
+        consumerSk.id === DM_ZEALOUS_SPINS_ID &&
+        skillDamageScalingCondsRank(consumerSk) >= 3 &&
+        passiveScriptGlobalMultApplies(DM_ZEALOUS_SPINS_ID)
+      ) {
+        const st = skillById[DM_ZEALOUS_SPINS_ARMOR_STATUS_ID];
+        const bag = st ? mergedVarsForSkillDesc(st, 3) : {};
+        const shred =
+          bag && typeof bag.val1 === "number" && Number.isFinite(bag.val1)
+            ? bag.val1
+            : typeof bag.var1 === "number"
+              ? bag.var1
+              : 0.2;
+        armorPts = Math.max(0, armorPts * (1 - shred));
+      }
+      mult *= 1 - plannerAffinityMitigatedFraction(armorPts, pen, cl);
     } else if (affinityRoot === "Magic") {
       const pen = der.SpellPenetration_pct || 0;
       const magPts = plannerEffectiveMagicArmorMitigationPts(combatCtx);
@@ -8005,9 +8179,7 @@
         String(i)
       )}">${escapeHtml(fin)}</span> `;
       inner += `<span class="gp-char-skill__final-dmg-kind">${escapeHtml(row.kindLabel)}</span>`;
-      if (hasDet) {
-        inner += ` <span class="gp-char-skill__computed-dmg-detail">(${escapeHtml(String(row.detail))})</span>`;
-      }
+      inner += formatDamageDetailParenHtml(row.detail);
       inner += `</div>`;
     }
     if (!inner) return "";
@@ -8063,16 +8235,95 @@
       else d = -te;
       if (Math.abs(d) < 1e-9) continue;
       const nm = skillDisplayName(sk) || sid;
-      const deltaStr =
-        Math.abs(d) < 1e-9 ? "0" : (d > 0 ? "+" : "") + formatDmgAmount(d);
       lines.push(
         `<div class="gp-damage-delta-preview__row"><span class="gp-damage-delta-preview__name">${escapeHtml(
           nm
-        )}</span> <span class="gp-damage-delta-preview__delta">${escapeHtml(deltaStr)}</span></div>`
+        )}</span> ${formatDamageDeltaColored(d)}</div>`
       );
     }
     if (!lines.length) return "";
     return `<div class="gp-damage-delta-preview">${lines.join("")}</div>`;
+  }
+
+  /**
+   * Talent / consumable hover: per-skill damage deltas (green ↑ / red ↓). Bleed talents omit direct self-damage.
+   */
+  function warriorTalentPerSkillImpactHtml(beforeCtx, afterCtx, classId, talentSid, maxRows) {
+    if (!beforeCtx || !afterCtx) return "";
+    const cap = maxRows != null && Number.isFinite(maxRows) ? Math.max(1, Math.floor(maxRows)) : 8;
+    const lines = [];
+    const skillIds = collectDamagingSkillIdsForBuffPanel(classId, afterCtx);
+    for (let ii = 0; ii < skillIds.length && lines.length < cap; ii++) {
+      const sid = skillIds[ii];
+      const sk = skillById[sid];
+      if (!sk) continue;
+      const nm = skillDisplayName(sk) || sid;
+      if (talentSid === WARRIOR_TALENT_BLOODFEAST_ID) {
+        const healB = warriorBloodfeastCritHealForSkill(sk, beforeCtx, false);
+        const healA = warriorBloodfeastCritHealForSkill(sk, afterCtx, true);
+        if (healB == null && healA == null) continue;
+        const d = (healA || 0) - (healB || 0);
+        if (Math.abs(d) < 1e-9) continue;
+        lines.push(
+          `<div class="gp-damage-delta-preview__row"><span class="gp-damage-delta-preview__name">${escapeHtml(
+            nm
+          )} heal</span> ${formatDamageDeltaColored(d)}</div>`
+        );
+        continue;
+      }
+      const te = skillTotalExpectedDamageSum(sk, beforeCtx);
+      const tp = skillTotalExpectedDamageSum(sk, afterCtx);
+      if (te == null && tp == null) continue;
+      let d = 0;
+      if (te != null && tp != null) d = tp - te;
+      else if (tp != null) d = tp;
+      else d = -te;
+      if (Math.abs(d) < 1e-9) continue;
+      lines.push(
+        `<div class="gp-damage-delta-preview__row"><span class="gp-damage-delta-preview__name">${escapeHtml(
+          nm
+        )}</span> ${formatDamageDeltaColored(d)}</div>`
+      );
+    }
+    if (!lines.length) return "";
+    return `<div class="gp-damage-delta-preview gp-damage-delta-preview--talent">${lines.join("")}</div>`;
+  }
+
+  /** **Bloodfeast** heal on a full crit Hemorrhage tick (assumes Hemorrhage + optional feast rank). */
+  function warriorBloodfeastCritHealForSkill(sk, combatCtx, feastActive) {
+    if (!sk || !combatCtx || !combatCtx.derived) return null;
+    const hemRank = warriorTalentRank(WARRIOR_HEMORRHAGE_TALENT_ID);
+    if (hemRank < 1) return null;
+    const feastRank = feastActive ? warriorTalentRank(WARRIOR_TALENT_BLOODFEAST_ID) : 0;
+    if (feastActive && feastRank < 1) return null;
+    const hemSk = skillById[WARRIOR_HEMORRHAGE_TALENT_ID];
+    const hemRatio =
+      hemSk && hemSk.vars && typeof hemSk.vars.damage === "number" && Number.isFinite(hemSk.vars.damage)
+        ? hemSk.vars.damage
+        : 0.4;
+    const feastSk = skillById[WARRIOR_TALENT_BLOODFEAST_ID];
+    const feastBag = feastSk && feastActive ? mergedVarsForSkillDesc(feastSk, feastRank) : {};
+    const feastRatio =
+      feastActive && feastBag && typeof feastBag.damage === "number" && Number.isFinite(feastBag.damage)
+        ? feastBag.damage
+        : 0;
+    if (feastActive && feastRatio <= 0) return null;
+    const derSkill = applyWarriorTalentCritOverridesForSkillPreview(combatCtx.derived, sk);
+    const onCrit = plannerCritDamageStatMultiplier(derSkill);
+    let sumHeal = 0;
+    let any = false;
+    skillForEachMergedDamagePreviewHit(sk, combatCtx, (p) => {
+      if (p.affinityRoot !== "Physical") return;
+      const preCrit = plannerExpectedPreCritExactFromPreview(p, combatCtx, sk, sk, true);
+      if (!Number.isFinite(preCrit) || !(preCrit > 0)) return;
+      const critRounded = hlMathRound(preCrit * onCrit);
+      let hemRounded = hlMathRound(hemRatio * critRounded);
+      hemRounded = warriorHemorrhageDoTExpectedAfterExsanguination(hemRounded, derSkill);
+      hemRounded *= warriorBloodlettingBleedMultiplier();
+      sumHeal += hemRounded * feastRatio;
+      any = true;
+    });
+    return any && sumHeal > 0 ? sumHeal : null;
   }
 
   function combatSnapshotAfterTalentRankDelta(sid, charLevel, classId, baseCtx) {
@@ -8473,7 +8724,9 @@
           const hits = row.damagePreviewHits || [];
           const sheetHits = hits.length
             ? formatDamagePreviewHitsBreakdownHtml(hits, combatCtx, "expected", sk)
-            : row.detail != null && String(row.detail).trim()
+            : plannerShowAdvancedDamageDetail() &&
+                row.detail != null &&
+                String(row.detail).trim()
               ? dmgTipTripleRowHtml(
                   `<span class="gp-muted">CDB lines</span>`,
                   escapeHtml(String(row.detail).trim()),
@@ -9326,12 +9579,9 @@
     for (let li = 0; li < rowsData.length; li++) {
       const row = rowsData[li];
       if (skillDamageRowShownInFinalBlock(row)) continue;
-      const hasD = row.detail != null && String(row.detail).trim() !== "";
       rows += `<div class="gp-char-skill__computed-dmg-row gp-char-skill__computed-dmg-row--merged">`;
       rows += `<span class="gp-char-skill__computed-dmg-kind">${escapeHtml(row.kindLabel)}</span>`;
-      if (hasD) {
-        rows += ` <span class="gp-char-skill__computed-dmg-detail">(${escapeHtml(String(row.detail))})</span>`;
-      }
+      rows += formatDamageDetailParenHtml(row.detail);
       rows += `</div>`;
     }
     if (!rows) return "";
@@ -10527,13 +10777,25 @@
       }
     }
 
-    const mergedDmg = sk ? skillMergedCombatDamageHtml(sk, combatCtx || null) : "";
-    const vsMon = sk ? skillVsMonsterAverageDamageHtml(sk, combatCtx || null) : "";
-    if (mergedDmg || vsMon) {
+    let impactHtml = "";
+    if (talentSkipsDirectDamagePreview(sid) && combatCtx) {
+      const classId = plannerSelectedClassId();
+      const afterCtx = combatSnapshotAfterTalentRankDelta(sid, charLevel, classId, combatCtx);
+      if (afterCtx) {
+        impactHtml = warriorTalentPerSkillImpactHtml(combatCtx, afterCtx, classId, sid, 10);
+      }
+    }
+    const mergedDmg =
+      sk && !talentSkipsDirectDamagePreview(sid) ? skillMergedCombatDamageHtml(sk, combatCtx || null) : "";
+    const vsMon =
+      sk && !talentSkipsDirectDamagePreview(sid) ? skillVsMonsterAverageDamageHtml(sk, combatCtx || null) : "";
+    if (impactHtml || mergedDmg || vsMon) {
       const hd = damagePreviewRowsExist(sk, combatCtx)
         ? `<div class="gp-tooltip-skill-preview-hd">With your stats</div>`
-        : "";
-      body += hd + mergedDmg + vsMon;
+        : impactHtml
+          ? `<div class="gp-tooltip-skill-preview-hd">Impact on skill damage (preview)</div>`
+          : "";
+      body += hd + impactHtml + mergedDmg + vsMon;
     }
 
     if (body) html += `<div class="gp-tooltip-skill-body">${body}</div>`;
@@ -10989,7 +11251,7 @@
       if (!ctx || lockAll) return;
       const afterCtx = combatSnapshotAfterTalentRankDelta(sid, charLevel, classId, ctx);
       if (!afterCtx) return;
-      const html = skillDamageDeltaPreviewHtml(ctx, afterCtx, classId, 6);
+      const html = warriorTalentPerSkillImpactHtml(ctx, afterCtx, classId, sid, 8);
       if (!html) return;
       showGearPlannerTooltip(btnInc, html, {
         className: "gp-slot-tooltip gp-slot-tooltip--damage-delta",
@@ -11035,9 +11297,31 @@
     if (sk && typeof sk.id === "string" && isWeaponBaseAttackSkillId(sk.id)) return "Attack";
     const t = sk && sk.texts;
     if (!t) return sk && sk.id ? String(sk.id) : "";
-    if (typeof t.name === "string") return t.name;
+    if (typeof t.name === "string" && t.name.trim()) return t.name;
     if (t.name && typeof t.name === "object" && t.name.v != null) return String(t.name.v);
+    const refs = t.refs;
+    if (refs && typeof refs === "object") {
+      for (const key of ["ref", "ref2", "ref3"]) {
+        const rid = refs[key];
+        if (typeof rid === "string" && rid.trim()) {
+          const host = skillById[rid.trim()];
+          const hn = host ? skillDisplayName(host) : "";
+          if (hn && hn !== rid) return hn;
+        }
+      }
+    }
     return sk.id || "";
+  }
+
+  /** Status / buff row label — prefer host skill name when the status has no display name. */
+  function skillDisplayNameForBuff(statusSk, hostSk) {
+    const n = skillDisplayName(statusSk);
+    if (statusSk && n && n !== statusSk.id) return n;
+    if (hostSk) {
+      const hn = skillDisplayName(hostSk);
+      if (hn && hn !== hostSk.id) return `${hn} (buff)`;
+    }
+    return n || (statusSk && statusSk.id) || "";
   }
 
   /** `skill.cooldown` from CDB — seconds (may be fractional). */
@@ -11476,6 +11760,25 @@
           : 25;
       out.CritChance_pct = (out.CritChance_pct || 0) + add;
     }
+    const tearSk = equippedWeaponSkillById(AXE_TEAR_ID);
+    if (tearSk && skillDamageScalingCondsRank(tearSk) >= 2) {
+      const bag = mergedVarsForSkillDesc(tearSk, skillDamageScalingCondsRank(tearSk));
+      const ch =
+        bag && typeof bag.val1 === "number" && Number.isFinite(bag.val1) ? bag.val1 * 100 : 5;
+      out.CritChance_pct = (out.CritChance_pct || 0) + ch;
+    }
+    const bloodrageSk = equippedWeaponSkillById(AXE_BLOODRAGE_AURA_ID);
+    if (bloodrageSk) {
+      const brRank = skillDamageScalingCondsRank(bloodrageSk);
+      const bag = mergedVarsForSkillDesc(bloodrageSk, brRank);
+      const ch =
+        bag && typeof bag.val1 === "number" && Number.isFinite(bag.val1)
+          ? bag.val1 * 100
+          : brRank >= 2
+            ? 5
+            : 3;
+      out.CritChance_pct = (out.CritChance_pct || 0) + ch;
+    }
     return out;
   }
 
@@ -11525,6 +11828,14 @@
       outSink.CritDamage_pct = (outSink.CritDamage_pct || 0) + add;
       if (plannerSelectedClassId() !== "Mage") return outSink;
       critDerived = outSink;
+    }
+    if (consumerSk && consumerSk.id === AXE_BONETHROW_ID && skillDamageScalingCondsRank(consumerSk) >= 3) {
+      const outBone = { ...critDerived };
+      const bag = mergedVarsForSkillDesc(consumerSk, skillDamageScalingCondsRank(consumerSk));
+      const add =
+        bag && typeof bag.var2 === "number" && Number.isFinite(bag.var2) ? bag.var2 * 100 : 20;
+      outBone.CritDamage_pct = (outBone.CritDamage_pct || 0) + add;
+      critDerived = outBone;
     }
     if (plannerSelectedClassId() !== "Mage" || !consumerSk) return critDerived;
     const out = { ...critDerived };
@@ -11599,7 +11910,10 @@
       const holdTier = skillHoldMergedDamageTierTarget(src);
       for (let si = 0; si < src.steps.length; si++) {
         const step = src.steps[si];
-        const effs = step.effects || [];
+          if (skillPreviewShouldSkipBrutalFrenzyBonusStep(sk, src, step)) continue;
+          if (skillPreviewShouldSkipSentenceBonusStep(sk, src, step)) continue;
+          if (skillPreviewShouldSkipProcDamageStep(sk, src, step)) continue;
+          const effs = step.effects || [];
         for (let ei = 0; ei < effs.length; ei++) {
           const e = effs[ei];
           if (!skillHostStepEffectMatchesMastery(sk, step, e)) continue;
@@ -11618,8 +11932,18 @@
   /**
    * Hemorrhage + Infused Wound bleed preview rows, and Cracking Blood expected proc damage (35% proc chance).
    */
+  function warriorBloodlettingBleedMultiplier() {
+    const rank = warriorTalentRank(WARRIOR_TALENT_BLOODLETTING_ID);
+    if (rank < 1) return 1;
+    const sk = skillById[WARRIOR_TALENT_BLOODLETTING_ID];
+    const bag = sk ? mergedVarsForSkillDesc(sk, rank) : {};
+    const d = bag && typeof bag.damage === "number" && Number.isFinite(bag.damage) ? bag.damage : rank >= 2 ? 0.2 : 0.1;
+    return 1 + d;
+  }
+
   function appendWarriorBleedRelatedPreviewRows(sk, combatCtx, rows) {
     if (!sk || !rows || !combatCtx || !combatCtx.sheetTotals || !combatCtx.derived) return;
+    if (talentSkipsDirectDamagePreview(sk.id)) return;
     const hemRank = warriorTalentRank(WARRIOR_HEMORRHAGE_TALENT_ID);
     const infusedRank = warriorTalentRank(WARRIOR_TALENT_INFUSED_WOUND_ID);
     const crackRank = warriorTalentRank(WARRIOR_TALENT_CRACKING_BLOOD_ID);
@@ -11647,7 +11971,8 @@
         const onCrit = plannerCritDamageStatMultiplier(derSkill);
         const critDamageRounded = hlMathRound(preCrit * onCrit);
         const hemRounded = hlMathRound(hemRatio * critDamageRounded);
-        const hemEv = warriorHemorrhageDoTExpectedAfterExsanguination(hemRounded, derSkill);
+        let hemEv = warriorHemorrhageDoTExpectedAfterExsanguination(hemRounded, derSkill);
+        hemEv *= warriorBloodlettingBleedMultiplier();
         sumPhysHem += pCrit * hemEv;
 
         if (infusedRank >= 1) {
@@ -11760,8 +12085,8 @@
         }
       }
     }
-    const mh = combatCtx.sheetTotals.MaxHealth;
-    if (typeof mh !== "number" || !Number.isFinite(mh)) return null;
+    const mh = plannerSheetMaxHealthFromCombatCtx(combatCtx);
+    if (!(mh > 0)) return null;
     return Math.max(0, hlMathRound(mh * ratio));
   }
 
@@ -11959,7 +12284,7 @@
         const total = per * stacks;
         if (Math.abs(total) < 1e-12) continue;
         out.push({
-          label: `Buff: ${skillDisplayName(statusSk)}`,
+          label: `Buff: ${skillDisplayNameForBuff(statusSk, host)}`,
           sub: `preview · via ${skillDisplayName(host)} · ×${stacks} stack(s)`,
           value: total,
         });
@@ -12591,7 +12916,7 @@
     )}${armorNote}</span></td></tr>`;
     html += `<tr><td>Physical damage mitigation</td><td><span class="gp-summary-stat-tip" tabindex="0" data-gp-sum-tip="physMit">${fmtPct(
       physMitPct
-    )} <span style="opacity:.65;font-size:0.85em">vs Lv&nbsp;${ml} · ${escapeHtml(foeLabRaw)}</span></span></td></tr>`;
+    )} <span style="opacity:.65;font-size:0.85em">vs Lv&nbsp;${ml}</span></span></td></tr>`;
     html += `<tr><td>Maximum health</td><td><span class="gp-summary-stat-tip" tabindex="0" data-gp-sum-tip="maxHealth">${fmtPrimary(
       maxHealthApprox
     )}</span></td></tr>`;
@@ -14492,6 +14817,51 @@
     textCol.appendChild(stackRow);
   }
 
+  function appendReverseHoneySpinArmorStackRow(textCol, sid) {
+    if (!textCol || sid !== GM_REVERSE_HONEY_SPIN_ID) return;
+    const host = skillById[GM_REVERSE_HONEY_SPIN_ID];
+    if (!host || skillDamageScalingCondsRank(host) < 3) return;
+    const statusSk = skillById[GM_REVERSE_HONEY_SPIN_ARMOR_STATUS_ID];
+    if (!statusSk) return;
+    const maxS = skillStatusMaxStacksFromProps(statusSk) || 10;
+    const cur = statusPreviewStackCount(statusSk);
+    const stackRow = document.createElement("div");
+    stackRow.className = "gp-char-skill__rank-row gp-char-skill__stack-row";
+    stackRow.setAttribute("data-status-id", GM_REVERSE_HONEY_SPIN_ARMOR_STATUS_ID);
+    stackRow.setAttribute("role", "group");
+    stackRow.setAttribute("aria-label", "Reverse Honey Spin rank 3 armor stacks");
+    const stackLab = document.createElement("span");
+    stackLab.className = "gp-char-skill__rank-lab";
+    stackLab.textContent = `Armor stacks (8s)`;
+    stackRow.appendChild(stackLab);
+    for (let sv = 0; sv <= maxS; sv++) {
+      const sb = document.createElement("button");
+      sb.type = "button";
+      sb.className = "gp-char-skill__rank-btn";
+      sb.textContent = String(sv);
+      sb.title =
+        sv === 0
+          ? "No Reverse Honey Spin armor stacks."
+          : `Assume ${sv} stack(s): +${formatSkillPercentFromRatio(0.05 * sv)} Armor and Magic Resistance for 8s.`;
+      sb.setAttribute("aria-pressed", sv === cur ? "true" : "false");
+      if (sv === cur) sb.classList.add("gp-char-skill__rank-btn--active");
+      sb.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (
+          !plannerDamagePreviewSettings.previewStatusStacksBySkillId ||
+          typeof plannerDamagePreviewSettings.previewStatusStacksBySkillId !== "object"
+        ) {
+          plannerDamagePreviewSettings.previewStatusStacksBySkillId = {};
+        }
+        if (sv === maxS) delete plannerDamagePreviewSettings.previewStatusStacksBySkillId[GM_REVERSE_HONEY_SPIN_ARMOR_STATUS_ID];
+        else plannerDamagePreviewSettings.previewStatusStacksBySkillId[GM_REVERSE_HONEY_SPIN_ARMOR_STATUS_ID] = sv;
+        if (typeof plannerRecomputePreviewHook === "function") plannerRecomputePreviewHook();
+      });
+      stackRow.appendChild(sb);
+    }
+    textCol.appendChild(stackRow);
+  }
+
   function appendTideRisingUppercutStackRow(textCol, sid) {
     if (!textCol || sid !== FISTS_TIDE_RISING_UPPERCUT_ID) return;
     const statusSk = skillById[FISTS_TIDE_RISING_STATUS_ID];
@@ -14616,7 +14986,7 @@
         : weaponEffectiveRank != null && Number.isFinite(weaponEffectiveRank)
           ? Math.max(1, Math.floor(weaponEffectiveRank))
           : undefined;
-    if (weaponSlotKeyForPower && sid) {
+    if (weaponSlotKeyForPower && sid && skillShowsWeaponRankPicker(sid)) {
       const rankRow = document.createElement("div");
       rankRow.className = "gp-char-skill__rank-row";
       rankRow.setAttribute("role", "group");
@@ -14749,6 +15119,7 @@
         appendStatusBuffStackRowsToSkillCard(textCol, sk, sk);
       }
       appendTideRisingUppercutStackRow(textCol, sid);
+      appendReverseHoneySpinArmorStackRow(textCol, sid);
       if (sid === URGE_TO_KILL_HOST_ID) appendUrgeFinisherStreakRow(textCol, sk);
       appendSurgeViolenceFinalComboRow(textCol, sid);
     }
@@ -14899,7 +15270,7 @@
     container.appendChild(sec);
   }
 
-  function appendBuffToggleCard(parent, sk, sid) {
+  function appendBuffToggleCard(parent, sk, sid, combatCtx) {
     if (!parent || !sk || !sid) return;
     const on = passiveScriptGlobalMultApplies(sid);
     const card = document.createElement("div");
@@ -14928,6 +15299,15 @@
       : "Active · affects other skills";
     meta.appendChild(nm);
     meta.appendChild(sub);
+    if (combatCtx) {
+      const showBuffTip = () => {
+        const tip = buildWeaponSkillTooltipHtml(sk, sid, combatCtx, { category: "other" });
+        if (tip) showGearPlannerTooltip(meta, tip, { className: "gp-slot-tooltip gp-slot-tooltip--skill-tip" });
+      };
+      meta.addEventListener("mouseenter", showBuffTip);
+      meta.addEventListener("mouseleave", scheduleHideGearPlannerTooltip);
+      nm.classList.add("gp-buff-row__name--tip");
+    }
 
     const tg = document.createElement("button");
     tg.type = "button";
@@ -15009,7 +15389,7 @@
       const grid = document.createElement("div");
       grid.className = "gp-buffs-panel__grid";
       for (let li = 0; li < list.length; li++) {
-        appendBuffToggleCard(grid, list[li], list[li].id);
+        appendBuffToggleCard(grid, list[li], list[li].id, combatCtx);
       }
       block.appendChild(grid);
       buffBody.appendChild(block);
@@ -15052,13 +15432,42 @@
         const row = document.createElement("div");
         row.className = "gp-buffs-damage-table__row";
         row.setAttribute("role", "row");
+        row.dataset.skillId = sid;
         const dmgStr = dmg != null && Number.isFinite(dmg) ? formatDmgAmount(Math.max(0, dmg)) : "—";
-        row.innerHTML = `<span class="gp-buffs-damage-table__skill" role="cell">${escapeHtml(
-          skillDisplayName(sk) || sid
-        )}</span><span class="gp-buffs-damage-table__dmg" role="cell">${escapeHtml(dmgStr)}</span>`;
+        const skillCell = document.createElement("span");
+        skillCell.className = "gp-buffs-damage-table__skill";
+        skillCell.setAttribute("role", "cell");
+        skillCell.textContent = skillDisplayName(sk) || sid;
+        const dmgCell = document.createElement("span");
+        dmgCell.className = "gp-buffs-damage-table__dmg gp-char-skill__dmg-tip";
+        dmgCell.setAttribute("role", "cell");
+        dmgCell.setAttribute("data-gp-dmg-tip", "expected");
+        dmgCell.setAttribute("data-gp-dmg-row", "0");
+        dmgCell.textContent = dmgStr;
+        row.appendChild(skillCell);
+        row.appendChild(dmgCell);
         table.appendChild(row);
+        skillCell.addEventListener("mouseenter", () => {
+          const tip = buildWeaponSkillTooltipHtml(sk, sid, combatCtx, { category: "other" });
+          if (tip) showGearPlannerTooltip(skillCell, tip, { className: "gp-slot-tooltip gp-slot-tooltip--skill-tip" });
+        });
+        skillCell.addEventListener("mouseleave", scheduleHideGearPlannerTooltip);
+        dmgCell.addEventListener("mouseenter", () => {
+          const tip = buildWeaponSkillTooltipHtml(sk, sid, combatCtx, { category: "other" });
+          if (tip) {
+            showGearPlannerTooltip(dmgCell, tip, { className: "gp-slot-tooltip gp-slot-tooltip--skill-tip" });
+            decorateGearPlannerSkillTooltipWithDamageBreakdown(
+              document.getElementById("gp-slot-tooltip"),
+              sk,
+              sid,
+              combatCtx
+            );
+          }
+        });
+        dmgCell.addEventListener("mouseleave", scheduleHideGearPlannerTooltip);
       }
       secDmg.appendChild(table);
+      wireNestedSkillDamageBreakdownTooltips(table, null, null, combatCtx);
     }
     container.appendChild(secDmg);
   }
@@ -15693,9 +16102,9 @@
           <button type="button" class="gp-tab gp-tab--active" role="tab" aria-selected="true" aria-controls="gp-panel-equipment" id="gp-tab-equipment">Equipment</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-class-skills" id="gp-tab-class-skills" tabindex="-1">Class skill</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-weapon-skills" id="gp-tab-weapon-skills" tabindex="-1">Weapon skill</button>
-          <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-buffs" id="gp-tab-buffs" tabindex="-1">Buffs</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-talent-tree" id="gp-tab-talent-tree" tabindex="-1">Talent tree</button>
           <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-consumables" id="gp-tab-consumables" tabindex="-1">Consumables</button>
+          <button type="button" class="gp-tab" role="tab" aria-selected="false" aria-controls="gp-panel-buffs" id="gp-tab-buffs" tabindex="-1">Buffs</button>
         </div>
         <div class="gear-planner__tab-panels">
           <div class="gear-planner__tab-panel gear-planner__tab-panel--active" role="tabpanel" id="gp-panel-equipment" aria-labelledby="gp-tab-equipment">
@@ -15708,9 +16117,6 @@
           <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-weapon-skills" aria-labelledby="gp-tab-weapon-skills" hidden>
             <div id="gp-weapon-skills-body" class="gear-planner__character-skills-body"></div>
           </div>
-          <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-buffs" aria-labelledby="gp-tab-buffs" hidden>
-            <div id="gp-buffs-body" class="gear-planner__character-skills-body"></div>
-          </div>
           <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-talent-tree" aria-labelledby="gp-tab-talent-tree" hidden>
             <h2 class="gear-planner__tab-panel-title">Talent tree</h2>
             <div id="gp-talent-tree-mount" class="gp-talent-tree-mount"></div>
@@ -15718,6 +16124,9 @@
           <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-consumables" aria-labelledby="gp-tab-consumables" hidden>
             <h2 class="gear-planner__tab-panel-title">Consumables</h2>
             <div id="gp-consumables-mount" class="gp-consumables-mount"></div>
+          </div>
+          <div class="gear-planner__tab-panel" role="tabpanel" id="gp-panel-buffs" aria-labelledby="gp-tab-buffs" hidden>
+            <div id="gp-buffs-body" class="gear-planner__character-skills-body"></div>
           </div>
         </div>
       </div>
@@ -15810,6 +16219,13 @@
               </label>
             </div>
           </fieldset>
+          <label class="gp-planner-settings-advanced">
+            <input type="checkbox" id="gp-planner-advanced-damage-detail" />
+            <span class="gp-planner-settings-advanced__text">
+              <span class="gp-planner-settings-advanced__title">Advanced descriptions</span>
+              <span class="gp-planner-settings-advanced__sub">Show damage breakdown sub-text in tooltips and on skill cards (scaling notes, crit math, etc.).</span>
+            </span>
+          </label>
         </section>
       </div>
       <footer class="gp-planner-settings-modal__footer">
@@ -16858,8 +17274,16 @@
               : 0,
           previewSurgeViolenceBoost:
             plannerDamagePreviewSettings.previewSurgeViolenceBoost === true ? true : false,
+          showAdvancedDamageDetail:
+            plannerDamagePreviewSettings.showAdvancedDamageDetail === true ? true : false,
         },
       };
+    }
+
+    function syncPlannerSettingsAdvancedCheckbox() {
+      const cb = root.querySelector("#gp-planner-advanced-damage-detail");
+      if (!cb) return;
+      cb.checked = plannerDamagePreviewSettings.showAdvancedDamageDetail === true;
     }
 
     function syncPlannerSettingsCritRadios() {
@@ -17053,10 +17477,13 @@
           typeof ufs === "number" && Number.isFinite(ufs) ? Math.max(0, Math.floor(ufs)) : 0;
         plannerDamagePreviewSettings.previewSurgeViolenceBoost =
           snap.damagePreview.previewSurgeViolenceBoost === true;
+        plannerDamagePreviewSettings.showAdvancedDamageDetail =
+          snap.damagePreview.showAdvancedDamageDetail === true;
       } else {
         plannerDamagePreviewSettings.mageConduitSkillIds = [];
         plannerDamagePreviewSettings.priestPrayerSkillIds = [];
       }
+      syncPlannerAdvancedDamageDetailClass();
       sanitizeClassSkillMasteriesForClass(selClass.value);
       sanitizeMageConduitSelection(cl);
       sanitizePriestPrayerSelection();
@@ -17208,6 +17635,7 @@
     let onAfterPlannerUpdate = null;
 
     function update() {
+      syncPlannerAdvancedDamageDetailClass();
       enforceCraftFactionPlannerTiers();
       const charLevel = charLv();
       const cls = selClass.value;
@@ -17768,6 +18196,7 @@
     function openPlannerSettingsModal() {
       if (!gpPlannerSettingsOverlay) return;
       syncPlannerSettingsCritRadios();
+      syncPlannerSettingsAdvancedCheckbox();
       refreshBuildList();
       setupModalFocusTrap(gpPlannerSettingsOverlay, "#gp-planner-settings-dialog", gpPlannerSettingsOpen);
       gpPlannerSettingsOverlay.hidden = false;
@@ -17816,6 +18245,15 @@
           plannerDamagePreviewSettings.critMode = v;
           updateCombatSnapshotOnly();
         }
+      });
+    }
+    const gpAdvancedDamageDetail = root.querySelector("#gp-planner-advanced-damage-detail");
+    if (gpAdvancedDamageDetail) {
+      gpAdvancedDamageDetail.addEventListener("change", () => {
+        plannerDamagePreviewSettings.showAdvancedDamageDetail = !!gpAdvancedDamageDetail.checked;
+        syncPlannerAdvancedDamageDetailClass();
+        updateCombatSnapshotOnly();
+        if (typeof plannerRefreshSkillsPanelsHook === "function") plannerRefreshSkillsPanelsHook();
       });
     }
 
